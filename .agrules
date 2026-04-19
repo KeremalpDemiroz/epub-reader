@@ -1,0 +1,13 @@
+Proje Vizyonu: İnovatif, canlı düzenlenebilir bir EPUB e-kitap okuyucu mobil uygulaması.
+Tech Stack: React Native (Expo), TypeScript, Zustand, react-native-webview.
+Mimari Kurallar:
+
+   1. Uygulamanın kabuğu Native (Expo), kitap okuma motoru WebView içinde çalışacaktır.
+
+   2. Kitap sayfaları WebView içine contenteditable="true" özelliği enjekte edilerek canlı düzenlenebilir hale getirilecektir.
+
+   3. Değişiklikler tam metin olarak değil, RAM/Disk şişmesini önlemek amacıyla diff-match-patch kullanılarak sadece "Delta (Fark)" olarak kaydedilecektir.
+
+   4. Tüm EPUB belleğe alınmayacak, sadece o an okunan bölüm (chapter) işlenecektir.
+
+   5. Dosya formatı standartlarına kesinlikle uyulacak; EPUB geri paketlenirken mimetype dosyası sıkıştırılmadan (compression: 0) arşive eklenecektir.  
