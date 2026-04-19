@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, Alert,
-  ActivityIndicator, Dimensions, Image, Animated, ScrollView,
+  ActivityIndicator, Dimensions, Image, Animated, ScrollView, TextInput,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
@@ -37,12 +37,18 @@ export default function HomeScreen() {
 
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedBooks, setSelectedBooks] = useState<string[]>([]);
-  const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [activeTags, setActiveTags]       = useState<string[]>([]);
+  const [searchQuery, setSearchQuery]     = useState('');
+  const [showSearch,  setShowSearch]      = useState(false);
 
   const tapTimeouts = React.useRef<{ [key: string]: NodeJS.Timeout }>({});
 
   const sortedBooks = [...books]
-    .filter(b => activeTags.length === 0 || activeTags.every(tagId => b.tagIds?.includes(tagId)))
+    .filter(b => {
+      const matchQuery = searchQuery.trim() === '' || b.title.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchTags  = activeTags.length === 0 || activeTags.every(tagId => b.tagIds?.includes(tagId));
+      return matchQuery && matchTags;
+    })
     .sort((a, b) => (b.lastReadAt || b.importedAt) - (a.lastReadAt || a.importedAt));
 
   // ── Floating Toast ──────────────────────────────────────────
@@ -279,33 +285,64 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* Etiket Filtreleme Barı */}
-      {tags.length > 0 && (
-        <View style={{ paddingHorizontal: Spacing.base, paddingVertical: Spacing.sm }}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-            {activeTags.length > 0 && (
+      {/* Arama + Etiket Paneli */}
+      {!selectionMode && (
+        <View style={styles.searchPanel}>
+          {/* Arama satırı */}
+          <View style={styles.searchRow}>
+            <View style={[styles.searchInputWrap, showSearch && { flex: 1 }]}>
+              {showSearch ? (
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Kitap ara..."
+                  placeholderTextColor={theme.textMuted}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  autoFocus
+                />
+              ) : (
+                <TouchableOpacity style={styles.searchIconBtn} onPress={() => setShowSearch(true)}>
+                  <Text style={{ fontSize: 16, color: theme.textSecondary }}>&#128269;</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            {showSearch && (
               <TouchableOpacity
-                style={[styles.tagFilterBtn, { backgroundColor: theme.danger || '#EF4444', borderColor: 'transparent' }]}
-                onPress={() => setActiveTags([])}
+                style={styles.searchCancelBtn}
+                onPress={() => { setShowSearch(false); setSearchQuery(''); }}
               >
-                <Text style={[styles.tagFilterText, { color: '#fff' }]}>✕ Temizle</Text>
+                <Text style={{ color: theme.textSecondary, fontWeight: Typography.medium }}>Kapat</Text>
               </TouchableOpacity>
             )}
-            {tags.map(t => {
-              const isActive = activeTags.includes(t.id);
-              return (
+          </View>
+
+          {/* Etiket Filtreleri */}
+          {(tags.length > 0 || activeTags.length > 0) && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tagFilterRow}>
+              {activeTags.length > 0 && (
                 <TouchableOpacity
-                  key={t.id}
-                  style={[styles.tagFilterBtn, isActive && { backgroundColor: t.color, borderColor: t.color }]}
-                  onPress={() => setActiveTags(prev =>
-                    isActive ? prev.filter(id => id !== t.id) : [...prev, t.id]
-                  )}
+                  style={[styles.tagFilterChip, { backgroundColor: '#EF4444', borderColor: 'transparent' }]}
+                  onPress={() => setActiveTags([])}
                 >
-                  <Text style={[styles.tagFilterText, isActive && { color: '#fff' }]}>{t.name}</Text>
+                  <Text style={[styles.tagFilterChipText, { color: '#fff' }]}>✕ Temizle</Text>
                 </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+              )}
+              {tags.map(t => {
+                const isActive = activeTags.includes(t.id);
+                return (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={[styles.tagFilterChip, isActive && { backgroundColor: t.color, borderColor: t.color }]}
+                    onPress={() => setActiveTags(prev =>
+                      isActive ? prev.filter(id => id !== t.id) : [...prev, t.id]
+                    )}
+                  >
+                    <Text style={[styles.tagFilterChipText, isActive && { color: '#fff' }]}>{t.name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          )}
         </View>
       )}
 
@@ -339,13 +376,6 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* % Badge */}
-              {pct !== null && (
-                <View style={styles.pctBadge}>
-                  <Text style={styles.pctBadgeText}>%{pct}</Text>
-                </View>
-              )}
-
               {/* Kapak */}
               {item.coverImagePath
                 ? <Image source={{ uri: item.coverImagePath }} style={styles.coverImage} resizeMode="cover" />
@@ -355,8 +385,8 @@ export default function HomeScreen() {
                   </View>
                 )}
 
-              {/* Alt Bilgi */}
-              <View style={styles.bookMeta}>
+              {/* Alt Bilgi + % Badge */}
+              <View style={[styles.bookMeta, { position: 'relative' }]}>
                 <Text style={styles.bookTitle} numberOfLines={2}>{item.title}</Text>
                 <Text style={[styles.bookSub, { color: theme.primary }]}>
                   {item.chapters?.length ? `${item.chapters.length} bölüm` : 'Bölüm bilgisi yok'}
@@ -366,6 +396,9 @@ export default function HomeScreen() {
                     ? `📖 ${new Date(item.lastReadAt).toLocaleDateString('tr-TR')}`
                     : 'Henüz açılmadı'}
                 </Text>
+                {pct !== null && (
+                  <Text style={styles.pctBadgeText}>%{pct}</Text>
+                )}
               </View>
             </TouchableOpacity>
           );
@@ -456,12 +489,10 @@ const getStyles = (theme: AppTheme, statusBarHeight = 0) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', ...Shadow.sm
   },
 
-  pctBadge: {
-    position: 'absolute', bottom: 92, right: 8, zIndex: 5,
-    backgroundColor: 'rgba(0,0,0,0.72)',
-    paddingHorizontal: 7, paddingVertical: 3, borderRadius: Radius.sm,
+  pctBadgeText: {
+    position: 'absolute', bottom: 4, right: 6, zIndex: 5,
+    color: theme.primary, fontSize: 13, fontWeight: Typography.bold,
   },
-  pctBadgeText: { color: '#fff', fontSize: 10, fontWeight: Typography.bold },
 
   emptyContainer: { alignItems: 'center', paddingTop: Spacing.xxl * 2 },
   emptyEmoji:     { fontSize: 60, marginBottom: Spacing.base },
@@ -476,17 +507,42 @@ const getStyles = (theme: AppTheme, statusBarHeight = 0) => StyleSheet.create({
   },
   toastText: { fontSize: Typography.sm, fontWeight: Typography.medium, textAlign: 'center', lineHeight: 20 },
 
-  tagFilterBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    borderColor: theme.border,
-    backgroundColor: theme.surface,
+  tagFilterChip: {
+    paddingHorizontal: 14, paddingVertical: 6, height: 32,
+    borderRadius: Radius.full, borderWidth: 1, borderColor: theme.border,
+    backgroundColor: theme.surface, justifyContent: 'center',
   },
-  tagFilterText: {
-    fontSize: 13,
-    fontWeight: Typography.medium,
-    color: theme.textSecondary,
+  tagFilterChipText: {
+    fontSize: 13, fontWeight: Typography.medium, color: theme.textSecondary,
+  },
+
+  // Arama paneli
+  searchPanel: {
+    borderBottomWidth: 1, borderBottomColor: theme.border,
+    paddingBottom: Spacing.sm,
+  },
+  searchRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.base, paddingTop: Spacing.sm, gap: Spacing.sm,
+  },
+  searchInputWrap: {
+    height: 36, backgroundColor: theme.surface,
+    borderRadius: Radius.full, borderWidth: 1, borderColor: theme.border,
+    flexDirection: 'row', alignItems: 'center', overflow: 'hidden',
+  },
+  searchIconBtn: {
+    paddingHorizontal: 14, height: '100%',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  searchInput: {
+    flex: 1, paddingHorizontal: 14, color: theme.textPrimary,
+    fontSize: Typography.sm, height: '100%',
+  },
+  searchCancelBtn: {
+    paddingHorizontal: 4,
+  },
+  tagFilterRow: {
+    paddingHorizontal: Spacing.base, paddingTop: Spacing.sm,
+    gap: 8, alignItems: 'center',
   },
 });

@@ -16,6 +16,7 @@ import { useTimelineStore } from '../store/useTimelineStore';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useThemeStore } from '../store/useThemeStore';
 import { Typography, Spacing, Radius, Shadow, AppTheme } from '../theme';
+import { VolumeManager } from 'react-native-volume-manager';
 
 // ─── CONSTANTS ────────────────────────────────────────────────
 const { width } = Dimensions.get('window');
@@ -451,6 +452,61 @@ export default function ReaderScreen() {
       }
     } catch {}
   };
+
+  const handleVolumeKey = useCallback((dir: 'next' | 'prev') => {
+    if (readerMode === 'paged') {
+      const js = dir === 'next' 
+        ? `(function(){
+            var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
+            if (window.currentPage < maxPage) {
+              window.currentPage++;
+              document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
+              if (typeof updatePagedProgress === 'function') updatePagedProgress();
+            } else {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type:'END_OF_CHAPTER' }));
+            }
+          })(); true;`
+        : `(function(){
+            if (window.currentPage > 0) {
+              window.currentPage--;
+              document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
+              if (typeof updatePagedProgress === 'function') updatePagedProgress();
+            } else {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type:'START_OF_CHAPTER' }));
+            }
+          })(); true;`;
+      webViewRef.current?.injectJavaScript(js);
+    } else {
+      const scrollAmt = Dimensions.get('window').height * 0.8;
+      const js = dir === 'next'
+        ? `window.scrollBy({ top: ${scrollAmt}, left: 0, behavior: 'smooth' }); true;`
+        : `window.scrollBy({ top: -${scrollAmt}, left: 0, behavior: 'smooth' }); true;`;
+      webViewRef.current?.injectJavaScript(js);
+    }
+  }, [readerMode]);
+
+  // Ses tuşları ile kontrol
+  useEffect(() => {
+    let lastVol = -1;
+    const sub = VolumeManager.addVolumeListener((res) => {
+      if (lastVol === -1) {
+        lastVol = res.volume;
+        return;
+      }
+      if (res.volume > lastVol || (res.volume === 1 && lastVol === 1)) {
+        handleVolumeKey('next');
+      } else if (res.volume < lastVol || (res.volume === 0 && lastVol === 0)) {
+        handleVolumeKey('prev');
+      }
+      lastVol = res.volume;
+    });
+
+    VolumeManager.showNativeVolumeUI(false);
+    return () => {
+      sub.remove();
+      VolumeManager.showNativeVolumeUI(true);
+    };
+  }, [handleVolumeKey]);
 
   const loadVersion = (id: string) => {
     const html = reconstructVersion(id);
