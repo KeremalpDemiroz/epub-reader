@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, Alert,
   ActivityIndicator, Dimensions, Image, Animated, ScrollView, TextInput,
+  BackHandler,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
@@ -13,6 +14,8 @@ import { loadEpubAndExtract } from '../services/EpubManager';
 import { Typography, Spacing, Radius, Shadow, AppTheme } from '../theme';
 import { useThemeStore } from '../store/useThemeStore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { scanDeviceForEpubs } from '../services/ScannerService';
+import { exportBookWithLatestVersions } from '../services/ExportService';
 
 const { width } = Dimensions.get('window');
 const FALLBACK_COLORS = ['#5B5FEF', '#10B981', '#F59E0B', '#EC4899', '#06B6D4', '#8B5CF6'];
@@ -42,6 +45,25 @@ export default function HomeScreen() {
   const [showSearch,  setShowSearch]      = useState(false);
 
   const tapTimeouts = React.useRef<{ [key: string]: NodeJS.Timeout }>({});
+
+  // Android geri tuşu: arama/seçim modunu kapat
+  useEffect(() => {
+    const onBack = () => {
+      if (selectionMode) {
+        setSelectionMode(false);
+        setSelectedBooks([]);
+        return true;
+      }
+      if (showSearch) {
+        setShowSearch(false);
+        setSearchQuery('');
+        return true;
+      }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [selectionMode, showSearch]);
 
   const sortedBooks = [...books]
     .filter(b => {
@@ -133,10 +155,9 @@ export default function HomeScreen() {
     } catch { showToast('Dosya seçimi sırasında hata oluştu.', 'error'); }
   };
 
-  // ── ⟳ SAF Klasör Tarama ───────────────────────────────────
+  // ── ⟳ Cihazı Tara (Tüm Cihaz) ───────────────────────────────────
   const handleScan = async () => {
     try {
-      // ── Adım 1: Depolama okuma izni ──────────────────────────
       const { status, canAskAgain } = await MediaLibrary.requestPermissionsAsync(false);
       if (status !== 'granted') {
         if (!canAskAgain) {
@@ -147,38 +168,27 @@ export default function HomeScreen() {
         return;
       }
 
-      // ── Adım 2: Klasör seçimi (SAF) ──────────────────────────
-      const SAF = FileSystem.StorageAccessFramework;
       setScanning(true);
-      const perm = await SAF.requestDirectoryPermissionsAsync();
-      if (!perm.granted) {
-        setScanning(false);
-        showToast('Klasör seçimi iptal edildi.', 'info');
-        return;
-      }
-      showToast('Klasör taranıyor…', 'info', 60000);
-      const found: { uri: string; name: string }[] = [];
-
-      const scanDir = async (dirUri: string) => {
-        try {
-          const entries = await SAF.readDirectoryAsync(dirUri);
-          for (const entry of entries) {
-            const name = decodeURIComponent(entry).split('/').pop() || entry;
-            if (name.toLowerCase().endsWith('.epub')) {
-              found.push({ uri: entry, name });
-            } else { try { await scanDir(entry); } catch {} }
-          }
-        } catch {}
-      };
-
-      await scanDir(perm.directoryUri);
+      showToast('Cihaz taranıyor, bu işlem biraz sürebilir...', 'info', 60000);
+      
+      const found = await scanDeviceForEpubs('file:///storage/emulated/0', (dir) => {
+        setProgress(`Taranıyor: ${dir}`);
+      });
+      
       setScanning(false);
       setToast(null);
-      if (found.length === 0) { showToast('Bu klasörde .epub bulunamadı.', 'info'); return; }
+      setProgress('');
+      
+      if (found.length === 0) { 
+        showToast('Cihazda .epub bulunamadı.', 'info'); 
+        return; 
+      }
+      
       await processAssets(found);
     } catch {
       setScanning(false);
-      showToast('Klasör tarama hatası.', 'error');
+      setProgress('');
+      showToast('Cihaz tarama hatası.', 'error');
     }
   };
 
@@ -192,6 +202,21 @@ export default function HomeScreen() {
           setSelectedBooks([]);
       }},
     ]);
+  };
+
+  const handleExport = async () => {
+    if (selectedBooks.length !== 1) return;
+    setLoading(true);
+    showToast('Dışa aktarılıyor...', 'info', 60000);
+    const success = await exportBookWithLatestVersions(selectedBooks[0]);
+    setLoading(false);
+    if (success) {
+      setToast(null);
+      setSelectionMode(false);
+      setSelectedBooks([]);
+    } else {
+      showToast('Dışa aktarma sırasında bir hata oluştu.', 'error');
+    }
   };
 
   const toggleSelection = (id: string) => {
@@ -238,13 +263,23 @@ export default function HomeScreen() {
               </TouchableOpacity>
               <Text style={styles.headerTitle}>{selectedBooks.length} Seçildi</Text>
             </View>
-            <TouchableOpacity
-              style={[styles.addBtn, { backgroundColor: '#EF4444' }]}
-              onPress={handleBulkDelete}
-              disabled={selectedBooks.length === 0}
-            >
-              <Text style={styles.addBtnText}>Sil</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
+              {selectedBooks.length === 1 && (
+                <TouchableOpacity
+                  style={[styles.addBtn, { backgroundColor: theme.primary }]}
+                  onPress={handleExport}
+                >
+                  <Text style={styles.addBtnText}>Dışa Aktar</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.addBtn, { backgroundColor: '#EF4444' }]}
+                onPress={handleBulkDelete}
+                disabled={selectedBooks.length === 0}
+              >
+                <Text style={styles.addBtnText}>Sil</Text>
+              </TouchableOpacity>
+            </View>
           </>
         ) : (
           <>

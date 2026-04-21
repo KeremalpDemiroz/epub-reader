@@ -16,7 +16,9 @@ import { useTimelineStore } from '../store/useTimelineStore';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useThemeStore } from '../store/useThemeStore';
 import { Typography, Spacing, Radius, Shadow, AppTheme } from '../theme';
-import { VolumeManager } from 'react-native-volume-manager';
+import * as Linking from 'expo-linking';
+import { sanitizeEpubHtml } from '../services/SanitizerService';
+// import { VolumeManager } from 'react-native-volume-manager';
 
 // ─── CONSTANTS ────────────────────────────────────────────────
 const { width } = Dimensions.get('window');
@@ -43,8 +45,9 @@ export default function ReaderScreen() {
   const navigation = useNavigation<any>();
   const webViewRef = useRef<WebView>(null);
   const insets     = useSafeAreaInsets();
-  const { theme, readerMode, fontSize, lineHeight, bgPresetId, setReaderMode, setFontSize, setLineHeight, setBgPresetId } = useThemeStore();
+  const { theme, readerMode, fontSize, lineHeight, bgPresetId, isDarkMode, setReaderMode, setFontSize, setLineHeight, setBgPresetId } = useThemeStore();
   const styles = getStyles(theme);
+  const flatListRef = useRef<FlatList>(null);
 
   // Her zaman güncel değeri yakalamak için ref — closure stale-ness sorununu önler
   const readerModeRef = useRef(readerMode);
@@ -52,6 +55,11 @@ export default function ReaderScreen() {
   const insetsRef = useRef(insets);
   useEffect(() => { insetsRef.current = insets; }, [insets]);
   const isNavigatingBack = useRef(false);
+  // Bölüm değişimi / düzenleme sonrası geri yüklenecek scroll yüzdesi (0–1)
+  const pendingScrollRestore = useRef<number | null>(null);
+  // Debounced scroll kaydetme zamanlayıcısı
+  const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current); }, []);
 
   // ── UI State ───────────────────────────────────────────────
   const [isLoading,     setIsLoading]     = useState(false);
@@ -75,7 +83,7 @@ export default function ReaderScreen() {
     activeBookId, activeChapterId, currentText,
     versionsByNode, addVersion, reconstructVersion, setActiveChapter,
   } = useTimelineStore();
-  const { getBook, updateCurrentChapter } = useLibraryStore();
+  const { getBook, updateCurrentChapter, updateScrollPosition, updateChapterTitle } = useLibraryStore();
 
   // ── Hesaplanmış değerler ───────────────────────────────────
   const targetBookId    = route.params?.bookId || activeBookId;
@@ -92,17 +100,24 @@ export default function ReaderScreen() {
   // ── Navigasyon modunu aç/kapat (animasyonlu) ───────────────
   const showNav = useCallback(() => {
     setIsNavMode(true);
+    if (Platform.OS === 'android') {
+      NavigationBar.setVisibilityAsync('visible');
+    }
     Animated.parallel([
-      Animated.spring(headerAnim, { toValue: 1, useNativeDriver: true, bounciness: 0, speed: 20 }),
-      Animated.spring(dockAnim,   { toValue: 1, useNativeDriver: true, bounciness: 0, speed: 20 }),
+      Animated.timing(headerAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
+      Animated.timing(dockAnim,   { toValue: 1, duration: 150, useNativeDriver: true }),
     ]).start();
   }, [headerAnim, dockAnim]);
 
   const hideNav = useCallback(() => {
+    setIsNavMode(false);
+    if (Platform.OS === 'android') {
+      NavigationBar.setVisibilityAsync('hidden');
+    }
     Animated.parallel([
-      Animated.spring(headerAnim, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 20 }),
-      Animated.spring(dockAnim,   { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 20 }),
-    ]).start(() => { setIsNavMode(false); setDockMode('nav'); });
+      Animated.timing(headerAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
+      Animated.timing(dockAnim,   { toValue: 0, duration: 150, useNativeDriver: true }),
+    ]).start(() => setDockMode('nav'));
   }, [headerAnim, dockAnim]);
 
   const toggleNav = () => {
@@ -112,14 +127,6 @@ export default function ReaderScreen() {
 
   // ── Sistem navigasyon barı gizleme/gösterme ───────────────────
   // (app.json'da edgeToEdgeEnabled: false ile çalışır)
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    if (isNavMode) {
-      NavigationBar.setVisibilityAsync('visible');
-    } else {
-      NavigationBar.setVisibilityAsync('hidden');
-    }
-  }, [isNavMode]);
 
   // Ekrandan çıkışta navigasyonu geri getir
   useEffect(() => {
@@ -144,15 +151,61 @@ export default function ReaderScreen() {
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (evt, g) => {
-        return evt.nativeEvent.pageX > width - 30
-          && g.dx < -15
-          && Math.abs(g.dx) > Math.abs(g.dy) * 1.5;
+        return evt.nativeEvent.pageX > width * 0.8
+          && g.dx < -10
+          && Math.abs(g.dx) > Math.abs(g.dy) * 1.2;
       },
       onPanResponderRelease: (_e, g) => {
-        if (g.dx < -40) openDrawerRef.current();
+        if (g.dx < -20) openDrawerRef.current();
       },
     })
   ).current;
+
+  // ── Güvenli Link ve Yönlendirme Kontrolü ───────────────────
+  const handleShouldStartLoadWithRequest = (request: any) => {
+    const { url, navigationType } = request;
+    if (!url || url === 'about:blank' || url.startsWith('data:')) return true;
+
+    // Dış Linkler
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      Linking.openURL(url).catch(e => console.warn('Dış link açılamadı:', e));
+      return false;
+    }
+
+    // Dahili linkler (Bölüm geçişi veya sayfa içi anchor)
+    if (navigationType === 'click' || url.includes('.xhtml') || url.includes('.html') || url.includes('#')) {
+      const fileNameRaw = url.split('/').pop() || '';
+      const fileName = fileNameRaw.split('#')[0];
+      const anchor = fileNameRaw.split('#')[1];
+
+      // Eğer mevcut bölümse yüklenmesine izin ver
+      if (url === currentChapter?.chapterBaseDir || url === book?.baseDir || url === currentChapter?.fullPath) {
+          return true;
+      }
+
+      if (book?.chapters) {
+        const targetChap = book.chapters.find(c => 
+          c.fullPath.endsWith(fileName) || 
+          c.id === fileName || 
+          (c as any).href?.endsWith(fileName)
+        );
+
+        if (targetChap) {
+          if (targetChap.id !== targetChapterId) {
+            updateCurrentChapter(targetBookId!, targetChap.id);
+          } else if (anchor) {
+            webViewRef.current?.injectJavaScript(`
+              var el = document.getElementById('${anchor}') || document.getElementsByName('${anchor}')[0];
+              if(el) el.scrollIntoView({behavior: 'smooth'});
+              true;
+            `);
+          }
+          return false;
+        }
+      }
+    }
+    return true;
+  };
 
   // ── Bölüm yükleme ──────────────────────────────────────────
   useEffect(() => {
@@ -200,17 +253,39 @@ export default function ReaderScreen() {
           }
         }
 
+        // HTML içeriğini temizle (Güvenlik)
+        htmlStr = await sanitizeEpubHtml(htmlStr);
+
         setActiveChapter(targetBookId, chapter.id, htmlStr);
         updateCurrentChapter(targetBookId, chapter.id);
         setIsLoading(false);
-        setScrollPct(0);
-        // İleri giderken hemen görünür yap, geri giderken onLoadEnd ve JS halledecek
-        if (!isNavigatingBack.current) {
-           setIsWebViewReady(true);
+        const savedPct = book?.currentScrollPct || 0;
+        setScrollPct(savedPct);
+        // Her zaman WebView'ı gizli başlat — beyaz flash'ı önle
+        setIsWebViewReady(false);
+        if (isNavigatingBack.current) {
+          // geri navigasyonda onLoadEnd halledecek
+        } else if (savedPct > 0.01) {
+          pendingScrollRestore.current = savedPct;
+        } else {
+          // onLoadEnd'de READY mesajı ile gösterilecek
+          pendingScrollRestore.current = 0;
         }
       })
       .catch(e => { console.error(e); setIsLoading(false); });
   }, [targetBookId, targetChapterId, activeBookId, activeChapterId]);
+
+  // ── Scroll to active chapter in Drawer list ────────────────
+  useEffect(() => {
+    if (flatListRef.current && book?.chapters && targetChapterId) {
+      const idx = book.chapters.findIndex(c => c.id === targetChapterId);
+      if (idx > -1) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToIndex({ index: idx, viewPosition: 0, animated: true });
+        }, 150);
+      }
+    }
+  }, [targetChapterId, book?.chapters]);
 
   // ── CSS & Theme → WebView ──────────────────────────────────
   useEffect(() => {
@@ -234,13 +309,14 @@ export default function ReaderScreen() {
   }, [isEditMode]);
 
   useEffect(() => {
+    const pct = scrollPct;
     webViewRef.current?.injectJavaScript(`
       try {
+        var savedPct = ${pct};
         window.isPaged = ${readerMode === 'paged'};
         if (window.isPaged) {
-          window.currentPage = 0;
           document.documentElement.style.overflow = 'hidden';
-          document.body.style.transition = 'transform 0.25s ease-out';
+          document.body.style.transition = 'none';
           document.body.style.columnWidth = '${width - 32}px';
           document.body.style.columnGap = '32px';
           document.body.style.height = '100vh';
@@ -248,7 +324,13 @@ export default function ReaderScreen() {
           document.body.style.padding = '${insets.top + 8}px 16px 16px 16px';
           document.body.style.margin = '0';
           document.body.style.boxSizing = 'border-box';
-          document.body.style.transform = 'translateX(0px)';
+          // Pozisyonu hesapla
+          setTimeout(function() {
+            var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
+            window.currentPage = Math.round(savedPct * maxPage);
+            document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
+            document.body.style.transition = 'transform 0.25s ease-out';
+          }, 50);
         } else {
           document.documentElement.style.overflow = '';
           document.body.style.transition = 'none';
@@ -259,6 +341,10 @@ export default function ReaderScreen() {
           document.body.style.overflowY = 'auto';
           document.body.style.overflowX = 'hidden';
           document.body.style.padding = '16px';
+          // Pozisyonu hesapla
+          setTimeout(function() {
+            window.scrollTo(0, savedPct * Math.max(1, document.body.scrollHeight - window.innerHeight));
+          }, 50);
         }
       } catch(e) {}
       true;
@@ -296,7 +382,7 @@ export default function ReaderScreen() {
       }
 
       var style = document.createElement('style');
-      style.innerHTML = '* { max-width: 100%; word-wrap: break-word; overflow-wrap: break-word; } img, video, iframe, pre, code { max-width: 100%; height: auto; white-space: pre-wrap; }';
+      style.innerHTML = '* { max-width: 100% !important; word-wrap: break-word; overflow-wrap: break-word; box-sizing: border-box; } img { max-width: 100% !important; width: 100% !important; height: auto !important; display: block; margin: 0 auto; } video, iframe { max-width: 100% !important; height: auto !important; display: block; } svg { max-width: 100% !important; height: auto !important; } pre, code { max-width: 100%; white-space: pre-wrap; }';
       document.head.appendChild(style);
 
       var endReachCount = 0;
@@ -367,7 +453,7 @@ export default function ReaderScreen() {
       }, { passive: true });
 
       document.addEventListener('touchend', function(e) {
-        if(!window.isPaged || document.body.contentEditable === "true" || window.getSelection().toString() !== "") return;
+        if(!window.isPaged || document.body.contentEditable === "true" || window.getSelection().toString() !== "" || !window.__webViewReady) return;
         var dx = e.changedTouches[0].clientX - startX;
         var dy = e.changedTouches[0].clientY - startY;
 
@@ -397,6 +483,9 @@ export default function ReaderScreen() {
         }
       }, { passive: false });
 
+      // WebView hazır bayrağı — yükleme sırasında swipe'ı engelle
+      window.__webViewReady = false;
+
       // User select & Edit Algılama
       document.body.style.webkitUserSelect = "none";
       document.body.style.userSelect = "none";
@@ -419,6 +508,8 @@ export default function ReaderScreen() {
   // ── Handlers ───────────────────────────────────────────────
   const saveEdits = () => {
     setIsEditMode(false);
+    // Düzenleme kaydedilince WebView yeniden yüklenecek; scroll pozisyonunu koru
+    pendingScrollRestore.current = scrollPct;
     webViewRef.current?.injectJavaScript(
       `window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SAVE_EDIT', html:document.body.innerHTML })); true;`
     );
@@ -427,8 +518,24 @@ export default function ReaderScreen() {
   const handleMsg = (event: any) => {
     try {
       const d = JSON.parse(event.nativeEvent.data);
-      if (d.type === 'SAVE_EDIT' && d.html) addVersion(d.html);
-      if (d.type === 'SCROLL') setScrollPct(d.pct);
+      if (d.type === 'SAVE_EDIT' && d.html) {
+        addVersion(d.html);
+        const titleMatch = d.html.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i) || d.html.match(/<title[^>]*>(.*?)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          const rawTitle = titleMatch[1].replace(/<[^>]+>/g, '').trim();
+          if (rawTitle && targetBookId && targetChapterId) {
+            updateChapterTitle(targetBookId, targetChapterId, rawTitle);
+          }
+        }
+      }
+      if (d.type === 'SCROLL') {
+        setScrollPct(d.pct);
+        // Debounced persist — 1 sn hareketsizlikte kaydet
+        if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current);
+        scrollSaveTimer.current = setTimeout(() => {
+          if (targetBookId) updateScrollPosition(targetBookId, d.pct);
+        }, 1000);
+      }
       if (d.type === 'END_OF_CHAPTER' && hasNext) {
         updateCurrentChapter(targetBookId!, book!.chapters![chapterIdx + 1].id);
       }
@@ -485,28 +592,21 @@ export default function ReaderScreen() {
     }
   }, [readerMode]);
 
-  // Ses tuşları ile kontrol
-  useEffect(() => {
-    let lastVol = -1;
-    const sub = VolumeManager.addVolumeListener((res) => {
-      if (lastVol === -1) {
-        lastVol = res.volume;
-        return;
-      }
-      if (res.volume > lastVol || (res.volume === 1 && lastVol === 1)) {
-        handleVolumeKey('next');
-      } else if (res.volume < lastVol || (res.volume === 0 && lastVol === 0)) {
-        handleVolumeKey('prev');
-      }
-      lastVol = res.volume;
-    });
-
-    VolumeManager.showNativeVolumeUI(false);
-    return () => {
-      sub.remove();
-      VolumeManager.showNativeVolumeUI(true);
-    };
-  }, [handleVolumeKey]);
+  // ── Ses tuşları ile kontrol (expo go'da ses engelinden dolayı devre dışı)
+  // useEffect(() => {
+  //   let lastVol = -1;
+  //   const sub = VolumeManager.addVolumeListener((res) => {
+  //     if (lastVol === -1) { lastVol = res.volume; return; }
+  //     if (res.volume > lastVol || (res.volume === 1 && lastVol === 1)) {
+  //       handleVolumeKey('next');
+  //     } else if (res.volume < lastVol || (res.volume === 0 && lastVol === 0)) {
+  //       handleVolumeKey('prev');
+  //     }
+  //     lastVol = res.volume;
+  //   });
+  //   VolumeManager.showNativeVolumeUI(false);
+  //   return () => { sub.remove(); VolumeManager.showNativeVolumeUI(true); };
+  // }, [handleVolumeKey]);
 
   const loadVersion = (id: string) => {
     const html = reconstructVersion(id);
@@ -526,15 +626,20 @@ export default function ReaderScreen() {
   // ─── RENDER ────────────────────────────────────────────────
   return (
     <View style={[styles.screen, { backgroundColor: bgPreset.bg }]}>
-      <StatusBar hidden={!isNavMode} />
+      <StatusBar
+        hidden={!isNavMode || isEditMode}
+        backgroundColor={theme.surface}
+        style={isDarkMode ? 'light' : 'dark'}
+      />
 
-      {/* ── ANİMASYONLU HEADER (navmod) ── */}
+      {/* ── ANİMASYONLU HEADER (edit modda gizli) ── */}
+      {!isEditMode && (
       <Animated.View
+        pointerEvents={isNavMode ? 'auto' : 'none'}
         style={[styles.topBar, {
           transform: [{ translateY: headerTranslate }],
           opacity: headerAnim,
           position: 'absolute', top: 0, left: 0, right: 0, zIndex: 30,
-          // Notch / punch-hole / status bar alanını
           paddingTop: insets.top,
         }]}
       >
@@ -543,30 +648,17 @@ export default function ReaderScreen() {
             <Text style={styles.backText}>‹</Text>
           </TouchableOpacity>
           <Text style={styles.topTitle} numberOfLines={1}>{book?.title || 'Kitap Oku'}</Text>
-          {/* Drawer / Düzenle aksiyonları */}
           <View style={styles.topRight}>
-            {!isEditMode ? (
-              <>
-                <TouchableOpacity style={styles.smBtn} onPress={() => setIsEditMode(true)}>
-                  <Text style={styles.smBtnText}>✏</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.smBtn, { backgroundColor: theme.primary }]} onPress={openDrawer}>
-                  <Text style={[styles.smBtnText, { color: theme.textOnDark }]}>☰</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <TouchableOpacity style={[styles.smBtn, { backgroundColor: theme.dangerLight }]} onPress={() => setIsEditMode(false)}>
-                  <Text style={styles.smBtnText}>✕</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.smBtn, { backgroundColor: theme.success }]} onPress={saveEdits}>
-                  <Text style={[styles.smBtnText, { color: theme.textOnDark }]}>✓</Text>
-                </TouchableOpacity>
-              </>
-            )}
+            <TouchableOpacity style={styles.smBtn} onPress={() => { hideNav(); setIsEditMode(true); }}>
+              <Text style={styles.smBtnText}>✏</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.smBtn, { backgroundColor: theme.primary }]} onPress={openDrawer}>
+              <Text style={[styles.smBtnText, { color: theme.textOnDark }]}>☰</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Animated.View>
+      )}
 
       {/* ── WEB VIEW ── */}
       <View style={styles.content} {...panResponder.panHandlers}>
@@ -582,6 +674,18 @@ export default function ReaderScreen() {
             style={[styles.webview, { backgroundColor: bgPreset.bg, opacity: isWebViewReady ? 1 : 0 }]}
             injectedJavaScript={initScript}
             onMessage={handleMsg}
+            onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
+            onNavigationStateChange={(navState) => {
+              if (Platform.OS === 'android') {
+                const shouldLoad = handleShouldStartLoadWithRequest({
+                  url: navState.url,
+                  navigationType: navState.navigationType || 'click'
+                });
+                if (!shouldLoad && navState.loading) {
+                  webViewRef.current?.stopLoading();
+                }
+              }
+            }}
             bounces={false}
             scrollEnabled={true}
             keyboardDisplayRequiresUserAction={false}
@@ -590,7 +694,27 @@ export default function ReaderScreen() {
             allowUniversalAccessFromFileURLs={true}
             mixedContentMode="always"
             onLoadEnd={() => {
-              if (isNavigatingBack.current) {
+              const restorePct = pendingScrollRestore.current;
+              if (restorePct !== null) {
+                // Hem düzenleme sonrası hem de kayıtlı pozisyon geri yükleme
+                pendingScrollRestore.current = null;
+                isNavigatingBack.current = false;
+                webViewRef.current?.injectJavaScript(`
+                  setTimeout(function() {
+                    if (window.isPaged) {
+                      var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
+                      window.currentPage = Math.round(${restorePct} * maxPage);
+                      document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
+                      if (typeof updatePagedProgress === 'function') updatePagedProgress();
+                    } else {
+                      window.scrollTo(0, ${restorePct} * Math.max(1, document.body.scrollHeight - window.innerHeight));
+                    }
+                    window.__webViewReady = true;
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
+                  }, 100);
+                  true;
+                `);
+              } else if (isNavigatingBack.current) {
                 isNavigatingBack.current = false;
                 webViewRef.current?.injectJavaScript(`
                   setTimeout(function() {
@@ -602,12 +726,20 @@ export default function ReaderScreen() {
                     } else {
                       window.scrollTo(0, document.body.scrollHeight);
                     }
+                    window.__webViewReady = true;
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
                   }, 50);
                   true;
                 `);
               } else {
-                setIsWebViewReady(true);
+                // Scroll gerekmese bile READY sinyali ile göster
+                webViewRef.current?.injectJavaScript(`
+                  setTimeout(function() {
+                    window.__webViewReady = true;
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
+                  }, 50);
+                  true;
+                `);
               }
             }}
           />
@@ -618,8 +750,8 @@ export default function ReaderScreen() {
         )}
       </View>
 
-      {/* ── ANİMASYONLU ALT DOCK ── */}
-      {isNavMode && (
+      {/* ── ANİMASYONLU ALT DOCK (edit modda gizli) ── */}
+      {!isEditMode && (
       <Animated.View
         pointerEvents={isNavMode ? 'auto' : 'none'}
         style={[styles.dock, {
@@ -779,6 +911,29 @@ export default function ReaderScreen() {
       </Animated.View>
       )}
 
+      {/* ── EDIT MOD FLOATING BAR ── */}
+      {isEditMode && (
+        <View style={[styles.editBar, { bottom: Math.max(insets.bottom, 16) + 8 }]}>
+          <View style={styles.editBarInner}>
+            <Text style={styles.editBarLabel}>✏ Düzenleme Modu</Text>
+            <View style={styles.editBarBtns}>
+              <TouchableOpacity
+                style={[styles.editBarBtn, { backgroundColor: theme.dangerLight }]}
+                onPress={() => setIsEditMode(false)}
+              >
+                <Text style={[styles.editBarBtnText, { color: theme.danger }]}>✕ İptal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.editBarBtn, { backgroundColor: theme.success }]}
+                onPress={saveEdits}
+              >
+                <Text style={[styles.editBarBtnText, { color: '#fff' }]}>✓ Kaydet</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* ── OVERLAY (drawer) ── */}
       {isDrawerOpen && (
         <Animated.View 
@@ -815,10 +970,17 @@ export default function ReaderScreen() {
         </View>
 
         {/* Bölümler */}
-        {drawerTab === 'chapters' && (
+        <View style={{ flex: 1, display: drawerTab === 'chapters' ? 'flex' : 'none' }}>
           <FlatList
+            ref={flatListRef}
             data={book?.chapters || []}
             keyExtractor={item => item.id}
+            onScrollToIndexFailed={info => {
+              const wait = new Promise(resolve => setTimeout(resolve, 300));
+              wait.then(() => {
+                flatListRef.current?.scrollToIndex({ index: info.index, viewPosition: 0, animated: false });
+              });
+            }}
             renderItem={({ item, index }) => {
               const isActive = targetChapterId === item.id;
               return (
@@ -837,10 +999,10 @@ export default function ReaderScreen() {
             }}
             ListEmptyComponent={<Text style={styles.emptyTab}>Bölüm bulunamadı.</Text>}
           />
-        )}
+        </View>
 
         {/* Zaman Akışı */}
-        {drawerTab === 'timeline' && (
+        <View style={{ flex: 1, display: drawerTab === 'timeline' ? 'flex' : 'none' }}>
           <FlatList
             data={[{ id: 'original', name: 'Orijinal Metin', timestamp: 0 }, ...versions]}
             keyExtractor={item => item.id}
@@ -864,7 +1026,7 @@ export default function ReaderScreen() {
             }}
             ListEmptyComponent={<Text style={styles.emptyTab}>Henüz versiyon yok.</Text>}
           />
-        )}
+        </View>
       </Animated.View>
     </View>
   );
@@ -878,6 +1040,33 @@ const getStyles = (theme: AppTheme) => StyleSheet.create({
   webview: { flex: 1 },
   center:  { flex: 1, justifyContent: 'center', alignItems: 'center' },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 15 },
+
+  // ─ Edit Mod Floating Bar ─
+  editBar: {
+    position: 'absolute', left: 16, right: 16, zIndex: 40,
+  },
+  editBarInner: {
+    backgroundColor: theme.surface,
+    borderRadius: Radius.xl,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    ...Shadow.lg,
+  },
+  editBarLabel: {
+    fontSize: Typography.sm,
+    fontWeight: Typography.semiBold,
+    color: theme.textSecondary,
+  },
+  editBarBtns: { flexDirection: 'row', gap: Spacing.sm },
+  editBarBtn: {
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.lg,
+  },
+  editBarBtnText: { fontSize: Typography.sm, fontWeight: Typography.semiBold },
 
   // ─ Üst Bar ─
   topBar: {

@@ -19,6 +19,7 @@ export interface Book {
   lastReadAt?: number;
   chapters?: EpubChapter[];
   currentChapterId?: string;
+  currentScrollPct?: number;
   coverImagePath?: string | null;
   tagIds?: string[];
 }
@@ -31,6 +32,8 @@ interface LibraryState {
   getBook: (id: string) => Book | undefined;
   updateLastRead: (id: string) => void;
   updateCurrentChapter: (bookId: string, chapterId: string) => void;
+  updateChapterTitle: (bookId: string, chapterId: string, title: string) => void;
+  updateScrollPosition: (bookId: string, pct: number) => void;
   addTag: (tag: Tag) => void;
   removeTag: (id: string) => void;
   toggleBookTag: (bookId: string, tagId: string) => void;
@@ -73,7 +76,19 @@ export const useLibraryStore = create<LibraryState>()(
         books: get().books.map(b => b.id === id ? { ...b, lastReadAt: Date.now() } : b)
       }),
       updateCurrentChapter: (bookId, chapterId) => set({
-        books: get().books.map(b => b.id === bookId ? { ...b, currentChapterId: chapterId } : b)
+        books: get().books.map(b => b.id === bookId ? { ...b, currentChapterId: chapterId, currentScrollPct: 0 } : b)
+      }),
+      updateChapterTitle: (bookId, chapterId, title) => set({
+        books: get().books.map(b => {
+          if (b.id !== bookId || !b.chapters) return b;
+          return {
+            ...b,
+            chapters: b.chapters.map(ch => ch.id === chapterId ? { ...ch, title } : ch)
+          };
+        })
+      }),
+      updateScrollPosition: (bookId, pct) => set({
+        books: get().books.map(b => b.id === bookId ? { ...b, currentScrollPct: pct } : b)
       }),
       addTag: (tag) => set({
         tags: [...get().tags.filter(t => t.id !== tag.id), tag]
