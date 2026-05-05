@@ -9,7 +9,7 @@ import { Platform, View, Text, TouchableOpacity, StyleSheet } from 'react-native
 
 import HomeScreen    from './src/screens/HomeScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
-import ReaderScreen  from './src/screens/ReaderScreen';
+import ReaderScreen  from './src/features/reader/ReaderScreenV2';
 import BookInfoScreen from './src/screens/BookInfoScreen';
 import MergeOrderScreen from './src/screens/MergeOrderScreen';
 import { useThemeStore } from './src/store/useThemeStore';

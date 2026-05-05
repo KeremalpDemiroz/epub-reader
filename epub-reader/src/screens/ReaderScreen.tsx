@@ -84,6 +84,8 @@ export default function ReaderScreen() {
   const [isNavMode,     setIsNavMode]     = useState(false); // okuma ↔ navigasyon
   const [dockMode,      setDockMode]      = useState<DockMode>('nav');
   const [isDrawerOpen,  setIsDrawerOpen]  = useState(false);
+  const isDrawerOpenRef = useRef(false);
+  const setDrawerOpen = (v: boolean) => { isDrawerOpenRef.current = v; setIsDrawerOpen(v); };
   const [drawerTab,     setDrawerTab]     = useState<DrawerTab>('chapters');
   const [scrollPct,     setScrollPct]     = useState(0); // 0–1
   const [isWebViewReady,setIsWebViewReady] = useState(true);
@@ -238,28 +240,80 @@ export default function ReaderScreen() {
   // ── Drawer ────────────────────────────────────────────────────
   const openDrawerRef = useRef(() => {});
   const openDrawer = () => {
-    console.log('[Reader][Drawer] Açılıyor');
     if (isNavMode) hideNav();
-    setIsDrawerOpen(true);
-    Animated.timing(slideAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start();
+    slideAnim.stopAnimation();
+    slideAnim.setValue(DRAWER_WIDTH);
+    setDrawerOpen(true);
+    requestAnimationFrame(() => {
+      Animated.timing(slideAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start();
+    });
   };
   const closeDrawer = () => {
-    console.log('[Reader][Drawer] Kapatılıyor');
     Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 200, useNativeDriver: true })
-      .start(() => setIsDrawerOpen(false));
+      .start(() => setDrawerOpen(false));
   };
   openDrawerRef.current = openDrawer;
 
-  // ── Swipe (sağ kenar) ──────────────────────────────────────
+  // ── Swipe: İçerik alanından sağ kenarda → sola çekerek açma ──
+  const openGestureOffset = useRef(DRAWER_WIDTH);
+
   const panResponder = useRef(
     PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (evt, g) => {
-        return evt.nativeEvent.pageX > width * 0.9
-          && g.dx < -10
+        if (isDrawerOpenRef.current) return false;
+        return evt.nativeEvent.pageX > width * 0.85
+          && g.dx < -6
           && Math.abs(g.dx) > Math.abs(g.dy) * 1.2;
       },
+      onPanResponderGrant: () => {
+        slideAnim.stopAnimation((v) => { openGestureOffset.current = v; });
+        isDrawerOpenRef.current = true;
+        setIsDrawerOpen(true);
+      },
+      onPanResponderMove: (_e, g) => {
+        // g.dx negatif = sola → açılma
+        const next = Math.max(0, Math.min(DRAWER_WIDTH, openGestureOffset.current + g.dx));
+        slideAnim.setValue(next);
+      },
       onPanResponderRelease: (_e, g) => {
-        if (g.dx < -20) openDrawerRef.current();
+        const cur = openGestureOffset.current + g.dx;
+        if (cur < DRAWER_WIDTH * 0.65 || g.vx < -0.4) {
+          Animated.timing(slideAnim, { toValue: 0, duration: 180, useNativeDriver: true }).start();
+        } else {
+          Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 180, useNativeDriver: true })
+            .start(() => { isDrawerOpenRef.current = false; setIsDrawerOpen(false); });
+        }
+      },
+    })
+  ).current;
+
+  // ── Swipe: Drawer içinde → sağa sürükleyerek kapatma ──
+  const closeGestureOffset = useRef(0);
+
+  const drawerPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_e, g) => {
+        if (!isDrawerOpenRef.current) return false;
+        return g.dx > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.2;
+      },
+      onPanResponderGrant: () => {
+        slideAnim.stopAnimation((v) => { closeGestureOffset.current = v; });
+      },
+      onPanResponderMove: (_e, g) => {
+        // g.dx pozitif = sağa → kapanma
+        const next = Math.max(0, Math.min(DRAWER_WIDTH, closeGestureOffset.current + g.dx));
+        slideAnim.setValue(next);
+      },
+      onPanResponderRelease: (_e, g) => {
+        const cur = closeGestureOffset.current + g.dx;
+        if (cur > DRAWER_WIDTH * 0.35 || g.vx > 0.4) {
+          Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 180, useNativeDriver: true })
+            .start(() => { isDrawerOpenRef.current = false; setIsDrawerOpen(false); });
+        } else {
+          Animated.timing(slideAnim, { toValue: 0, duration: 180, useNativeDriver: true }).start();
+        }
       },
     })
   ).current;
@@ -1180,7 +1234,7 @@ export default function ReaderScreen() {
       )}
 
       {/* ── SAĞ ÇEKMECE ── */}
-      <Animated.View style={[styles.drawer, { transform: [{ translateX: slideAnim }] }]}>
+      <Animated.View style={[styles.drawer, { transform: [{ translateX: slideAnim }] }]} {...drawerPanResponder.panHandlers}>
 
         {/* Çekmece üstü */}
         <View style={styles.drawerHeader}>

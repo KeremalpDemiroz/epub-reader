@@ -5,7 +5,7 @@
 - **Sadece Değişiklik (Diff):** Dosyanın tamamını tekrar yazma. Sadece değişen fonksiyonu veya satırı, bağlamı bozmayacak şekilde ver.
 - **Açıklama Yasağı:** Ben sormadıkça kodun ne yaptığını açıklama. Sadece teknik not gerekliyse 1-2 kelimeyle belirt.
 - **Base64/Görsel Kısıtlaması:** 100 karakterden uzun Base64 verilerini kod içine gömme, `// [BASE64_HIDDEN]` olarak işaretle.
-
+- **Her adımda geri bildirimde bulunma. Sadece işlem tamamlandıktan sonra önceki kurallar çerçevesinde kısa ve net, hedef odaklı bir açıklama yap.**
 ## [cite_start]2. TEKNİK MİMARİ VE VİZYON 
 - [cite_start]**Yapı:** Native (Expo) kabuk içinde çalışan WebView tabanlı kitap okuma motoru[cite: 2].
 - [cite_start]**Canlı Düzenleme:** WebView içine `contenteditable="true"` enjekte edilerek gerçek zamanlı edit sağlanacak[cite: 3].
