@@ -27,12 +27,22 @@ interface ThemeStore {
   fontSize: number;
   lineHeight: number;
   bgPresetId: string;
+  enableHaptics: boolean;
+  showClockAndBattery: boolean;
+  enableReadingTracking: boolean;
+  enableVolumeNavigation: boolean;
+  scrollBuffer: number;
   setPalette: (id: string) => void;
   toggleDarkMode: () => void;
   setReaderMode: (mode: 'scroll' | 'paged') => void;
   setFontSize: (size: number) => void;
   setLineHeight: (lh: number) => void;
   setBgPresetId: (id: string) => void;
+  setEnableHaptics: (val: boolean) => void;
+  setShowClockAndBattery: (val: boolean) => void;
+  setEnableReadingTracking: (val: boolean) => void;
+  setEnableVolumeNavigation: (val: boolean) => void;
+  setScrollBuffer: (val: number) => void;
 }
 
 export const useThemeStore = create<ThemeStore>()(
@@ -45,12 +55,22 @@ export const useThemeStore = create<ThemeStore>()(
       fontSize:   16,
       lineHeight: 1.75,
       bgPresetId: 'Beyaz',
-      setPalette:      (id)         => set((s) => ({ paletteId: id,  theme: generateTheme(id, s.isDarkMode) })),
-      toggleDarkMode:  ()           => set((s) => ({ isDarkMode: !s.isDarkMode, theme: generateTheme(s.paletteId, !s.isDarkMode) })),
-      setReaderMode:   (readerMode) => set({ readerMode }),
-      setFontSize:     (fontSize)   => set({ fontSize }),
-      setLineHeight:   (lineHeight) => set({ lineHeight }),
-      setBgPresetId:   (bgPresetId) => set({ bgPresetId }),
+      enableHaptics: true,
+      showClockAndBattery: true,
+      enableReadingTracking: true,
+      enableVolumeNavigation: true,
+      scrollBuffer: 50,
+      setPalette:      (id)         => { console.log(`[Store][Theme] setPalette: ${id}`); set((s) => ({ paletteId: id,  theme: generateTheme(id, s.isDarkMode) })); },
+      toggleDarkMode:  ()           => set((s) => { console.log(`[Store][Theme] toggleDarkMode: ${!s.isDarkMode}`); return { isDarkMode: !s.isDarkMode, theme: generateTheme(s.paletteId, !s.isDarkMode) }; }),
+      setReaderMode:   (readerMode) => { console.log(`[Store][Theme] setReaderMode: ${readerMode}`); set({ readerMode }); },
+      setFontSize:     (fontSize)   => { console.log(`[Store][Theme] setFontSize: ${fontSize}`); set({ fontSize }); },
+      setLineHeight:   (lineHeight) => { console.log(`[Store][Theme] setLineHeight: ${lineHeight}`); set({ lineHeight }); },
+      setBgPresetId:   (bgPresetId) => { console.log(`[Store][Theme] setBgPresetId: ${bgPresetId}`); set({ bgPresetId }); },
+      setEnableHaptics: (enableHaptics) => { console.log(`[Store][Theme] setEnableHaptics: ${enableHaptics}`); set({ enableHaptics }); },
+      setShowClockAndBattery: (showClockAndBattery) => { console.log(`[Store][Theme] setShowClockAndBattery: ${showClockAndBattery}`); set({ showClockAndBattery }); },
+      setEnableReadingTracking: (enableReadingTracking) => { console.log(`[Store][Theme] setEnableReadingTracking: ${enableReadingTracking}`); set({ enableReadingTracking }); },
+      setEnableVolumeNavigation: (enableVolumeNavigation) => { console.log(`[Store][Theme] setEnableVolumeNavigation: ${enableVolumeNavigation}`); set({ enableVolumeNavigation }); },
+      setScrollBuffer: (scrollBuffer) => { console.log(`[Store][Theme] setScrollBuffer: ${scrollBuffer}`); set({ scrollBuffer }); },
     }),
     {
       name:    'epub-theme-v6',

@@ -1,13 +1,23 @@
-Proje Vizyonu: İnovatif, canlı düzenlenebilir bir EPUB e-kitap okuyucu mobil uygulaması.
-Tech Stack: React Native (Expo), TypeScript, Zustand, react-native-webview.
-Mimari Kurallar:
+# EPUB EDITOR & TOKEN OPTIMIZATION PROTOCOL
 
-   1. Uygulamanın kabuğu Native (Expo), kitap okuma motoru WebView içinde çalışacaktır.
+## 1. İLETİŞİM VE ÇIKTI KURALLARI (KRİTİK)
+- **Minimum Söz, Maksimum Kod:** Yanıtlarında "Anladım", "Hazırlıyorum" gibi dolgu cümlelerini asla kullanma. Doğrudan çözüme geç.
+- **Sadece Değişiklik (Diff):** Dosyanın tamamını tekrar yazma. Sadece değişen fonksiyonu veya satırı, bağlamı bozmayacak şekilde ver.
+- **Açıklama Yasağı:** Ben sormadıkça kodun ne yaptığını açıklama. Sadece teknik not gerekliyse 1-2 kelimeyle belirt.
+- **Base64/Görsel Kısıtlaması:** 100 karakterden uzun Base64 verilerini kod içine gömme, `// [BASE64_HIDDEN]` olarak işaretle.
 
-   2. Kitap sayfaları WebView içine contenteditable="true" özelliği enjekte edilerek canlı düzenlenebilir hale getirilecektir.
+## [cite_start]2. TEKNİK MİMARİ VE VİZYON 
+- [cite_start]**Yapı:** Native (Expo) kabuk içinde çalışan WebView tabanlı kitap okuma motoru[cite: 2].
+- [cite_start]**Canlı Düzenleme:** WebView içine `contenteditable="true"` enjekte edilerek gerçek zamanlı edit sağlanacak[cite: 3].
+- [cite_start]**Veri Verimliliği:** Değişiklikler tam metin yerine `diff-match-patch` ile sadece "Delta (Fark)" olarak kaydedilecek[cite: 4].
+- [cite_start]**Bellek Yönetimi:** Tüm EPUB yüklenmeyecek; sadece aktif bölüm (chapter) RAM/Disk üzerinde işlenecek[cite: 5].
 
-   3. Değişiklikler tam metin olarak değil, RAM/Disk şişmesini önlemek amacıyla diff-match-patch kullanılarak sadece "Delta (Fark)" olarak kaydedilecektir.
+## [cite_start]3. DOSYA STANDARTLARI [cite: 5]
+- [cite_start]**EPUB Paketleme:** Geri paketleme sırasında `mimetype` dosyası kesinlikle sıkıştırılmadan (`compression: 0`) arşive eklenecek[cite: 6].
+- **TypeScript & Zustand:** Tüm state yönetimi Zustand ile, kodlama ise TypeScript tip güvenliği ile yapılacak.
+- **Styling:** React Native tarafında `StyleSheet.create` kullanılacak.
 
-   4. Tüm EPUB belleğe alınmayacak, sadece o an okunan bölüm (chapter) işlenecektir.
-
-   5. Dosya formatı standartlarına kesinlikle uyulacak; EPUB geri paketlenirken mimetype dosyası sıkıştırılmadan (compression: 0) arşive eklenecektir.  
+## 4. ANALİZ ÖNCELİĞİ
+- Dosya okurken sadece mevcut görevle doğrudan ilişkili dosyaları analiz et.
+- Büyük dosyalarda sadece ilgili fonksiyon bloklarına odaklan.
+- Bir kodu düzeltirken çevresindeki kodları düzeltme, göreve odaklan.

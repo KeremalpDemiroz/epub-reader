@@ -138,8 +138,17 @@ export default function BookInfoScreen({ route, navigation }: Props) {
         <Text style={styles.dateText}>
           Son Okuma: {book.lastReadAt ? new Date(book.lastReadAt).toLocaleDateString('tr-TR') : 'Hiç okunmadı'}
         </Text>
+        {book.totalReadTimeSeconds ? (
+          <Text style={[styles.dateText, { marginTop: 2, color: theme.primary }]}>
+            Toplam Okuma: {book.totalReadTimeSeconds >= 3600 
+              ? `${Math.floor(book.totalReadTimeSeconds / 3600)} Saat ${Math.floor((book.totalReadTimeSeconds % 3600) / 60)} Dk`
+              : `${Math.floor(book.totalReadTimeSeconds / 60)} Dakika`}
+          </Text>
+        ) : null}
         <TouchableOpacity style={styles.chapterBtn} onPress={() => setShowChapters(v => !v)}>
-          <Text style={styles.chapterBtnText}>Bölüm Listesi ({totalChapters}) {showChapters ? '▲' : '▼'}</Text>
+          <Text style={styles.chapterBtnText}>
+            Bölüm Listesi ({totalChapters > 0 ? (currentIndex >= 0 ? currentIndex + 1 : 1) : 0}/{totalChapters}) {showChapters ? '▲' : '▼'}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>

@@ -1,15 +1,22 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
-const EXCLUDED_DIRS = ['Android', 'data', 'obb', 'lost+found', '.sys', '.Trashes'];
+const EXCLUDED_DIRS = [
+  'data', 'obb', 'lost+found', '.sys', '.Trashes',
+  'WhatsApp', 'Telegram', 'Instagram', 'DCIM', 'Camera',
+  'Screenshots', 'Ringtones', 'Alarms', 'Notifications', 'Podcasts',
+];
 
 export async function scanDeviceForEpubs(
-  dirUri: string = 'file:///storage/emulated/0',
+  rootPath: string = 'file:///storage/emulated/0',
   onProgress?: (dir: string) => void
 ): Promise<{ uri: string; name: string }[]> {
+  // file:// prefix yoksa ekle
+  const dirUri = rootPath.startsWith('file://') ? rootPath : `file://${rootPath}`;
   let found: { uri: string; name: string }[] = [];
   
   try {
-    if (onProgress) onProgress(dirUri.split('/').pop() || 'Tarama');
+    const dirName = dirUri.split('/').pop() || '';
+    if (onProgress) onProgress(dirName);
     
     const entries = await FileSystem.readDirectoryAsync(dirUri);
     
@@ -18,11 +25,9 @@ export async function scanDeviceForEpubs(
 
       const fullPath = `${dirUri}/${entry}`;
       
-      // Optimizasyon: .epub ise direkt listeye ekle, klasör kontrolüne gerek kalmaz
       if (entry.toLowerCase().endsWith('.epub')) {
         found.push({ uri: fullPath, name: entry });
-      } else if (!entry.includes('.')) { 
-        // Basit optimizasyon: Uzantısı olmayanlar genelde klasördür (kesin değil ama hızlandırır)
+      } else { 
         try {
           const entryInfo = await FileSystem.getInfoAsync(fullPath);
           if (entryInfo.isDirectory) {
@@ -34,9 +39,43 @@ export async function scanDeviceForEpubs(
         }
       }
     }
-  } catch (e) {
-    console.warn("Okunamayan dizin:", dirUri);
+  } catch (e: any) {
+    console.warn("Okunamayan dizin:", dirUri, e?.message || e);
   }
   
+  console.log(`[Scanner] ${dirUri} → ${found.length} epub bulundu`);
+  return found;
+}
+
+export async function scanDeviceForEpubsSAF(
+  dirUri: string,
+  onProgress?: (dir: string) => void
+): Promise<{ uri: string; name: string }[]> {
+  let found: { uri: string; name: string }[] = [];
+  try {
+    if (onProgress) onProgress('Klasör taranıyor...');
+    const entries = await FileSystem.StorageAccessFramework.readDirectoryAsync(dirUri);
+    
+    for (const uri of entries) {
+      const decodedUri = decodeURIComponent(uri);
+      
+      if (decodedUri.toLowerCase().endsWith('.epub')) {
+        let name = decodedUri.split('/').pop() || 'kitap.epub';
+        if (name.includes(':')) {
+           name = name.split(':').pop() || name;
+        }
+        found.push({ uri, name });
+      } else if (!decodedUri.includes('.')) {
+        try {
+          const subFound = await scanDeviceForEpubsSAF(uri, onProgress);
+          found = found.concat(subFound);
+        } catch (e) {
+          // Klasör değilse atla
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("SAF Okunamayan dizin:", dirUri);
+  }
   return found;
 }

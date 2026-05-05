@@ -3,6 +3,7 @@ import {
   StyleSheet, View, Text, FlatList, TouchableOpacity,
   ActivityIndicator, Animated, Dimensions, TouchableWithoutFeedback,
   PanResponder, Alert, ToastAndroid, Platform, useWindowDimensions,
+  KeyboardAvoidingView, DeviceEventEmitter
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -18,11 +19,17 @@ import { useThemeStore } from '../store/useThemeStore';
 import { Typography, Spacing, Radius, Shadow, AppTheme } from '../theme';
 import * as Linking from 'expo-linking';
 import { sanitizeEpubHtml } from '../services/SanitizerService';
-// import { VolumeManager } from 'react-native-volume-manager';
+import { useKeepAwake } from 'expo-keep-awake';
+import * as Battery from 'expo-battery';
+
+let VolumeManager: any = null;
+try {
+  VolumeManager = require('react-native-volume-manager').VolumeManager;
+} catch (e) {
+  console.warn('VolumeManager yüklenemedi. Expo Go kullanıyorsanız bu normaldir.');
+}
 
 // ─── CONSTANTS ────────────────────────────────────────────────
-const { width } = Dimensions.get('window');
-const DRAWER_WIDTH = width * 0.78;
 const SWIPE_ZONE   = 36;
 const MIN_FONT     = 12;
 const MAX_FONT     = 28;
@@ -45,9 +52,19 @@ export default function ReaderScreen() {
   const navigation = useNavigation<any>();
   const webViewRef = useRef<WebView>(null);
   const insets     = useSafeAreaInsets();
-  const { theme, readerMode, fontSize, lineHeight, bgPresetId, isDarkMode, setReaderMode, setFontSize, setLineHeight, setBgPresetId } = useThemeStore();
-  const styles = getStyles(theme);
+  const { width, height } = useWindowDimensions();
+  const DRAWER_WIDTH = width * 0.78;
+  
+  const { 
+    theme, readerMode, fontSize, lineHeight, bgPresetId, isDarkMode, 
+    enableReadingTracking, showClockAndBattery, enableVolumeNavigation, scrollBuffer,
+    setReaderMode, setFontSize, setLineHeight, setBgPresetId 
+  } = useThemeStore();
+  const styles = getStyles(theme, width, height, insets.top);
   const flatListRef = useRef<FlatList>(null);
+
+  // Okuma modunda ekranın kapanmasını engelle
+  useKeepAwake();
 
   // Her zaman güncel değeri yakalamak için ref — closure stale-ness sorununu önler
   const readerModeRef = useRef(readerMode);
@@ -78,12 +95,31 @@ export default function ReaderScreen() {
   const dockAnim    = useRef(new Animated.Value(0)).current;
   const slideAnim   = useRef(new Animated.Value(DRAWER_WIDTH)).current;
 
+  useEffect(() => {
+    if (!isDrawerOpen) {
+      slideAnim.setValue(width * 0.78);
+    }
+  }, [width]);
+
+  // Gezinti çubuğu yüksekliğini mount'ta yakala ve sabitle
+  const navBarHeight = useRef(insets.bottom);
+
+  // Dock animasyonu anlık log
+  useEffect(() => {
+    const id = dockAnim.addListener(({ value }) => {
+      // translateY: dockTranslate = dockAnim.interpolate({ inputRange:[0,1], outputRange:[250, 0] })
+      const pos = 250 - (value * 250);
+      console.log(`[Reader][Nav][Anim] Dock Y-Pos: ${pos.toFixed(1)} (progress: ${value.toFixed(2)})`);
+    });
+    return () => dockAnim.removeListener(id);
+  }, [dockAnim]);
+
   // ── Store ──────────────────────────────────────────────────
   const {
     activeBookId, activeChapterId, currentText,
     versionsByNode, addVersion, reconstructVersion, setActiveChapter,
   } = useTimelineStore();
-  const { getBook, updateCurrentChapter, updateScrollPosition, updateChapterTitle } = useLibraryStore();
+  const { getBook, updateCurrentChapter, updateScrollPosition, updateChapterTitle, addReadingTime } = useLibraryStore();
 
   // ── Hesaplanmış değerler ───────────────────────────────────
   const targetBookId    = route.params?.bookId || activeBookId;
@@ -99,49 +135,116 @@ export default function ReaderScreen() {
 
   // ── Navigasyon modunu aç/kapat (animasyonlu) ───────────────
   const showNav = useCallback(() => {
+    console.log('[Reader][Nav] Header/Dock gösteriliyor');
     setIsNavMode(true);
     if (Platform.OS === 'android') {
       NavigationBar.setVisibilityAsync('visible');
     }
     Animated.parallel([
-      Animated.timing(headerAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
-      Animated.timing(dockAnim,   { toValue: 1, duration: 150, useNativeDriver: true }),
+      Animated.timing(headerAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(dockAnim,   { toValue: 1, duration: 200, useNativeDriver: true }),
     ]).start();
   }, [headerAnim, dockAnim]);
 
   const hideNav = useCallback(() => {
-    setIsNavMode(false);
+    console.log('[Reader][Nav] Header/Dock gizleniyor');
     if (Platform.OS === 'android') {
       NavigationBar.setVisibilityAsync('hidden');
     }
     Animated.parallel([
-      Animated.timing(headerAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
-      Animated.timing(dockAnim,   { toValue: 0, duration: 150, useNativeDriver: true }),
-    ]).start(() => setDockMode('nav'));
+      Animated.timing(headerAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(dockAnim,   { toValue: 0, duration: 200, useNativeDriver: true }),
+    ]).start(() => {
+      setIsNavMode(false);
+      setDockMode('nav');
+    });
   }, [headerAnim, dockAnim]);
 
   const toggleNav = () => {
+    console.log(`[Reader][Nav] Toggle: ${isNavMode ? 'gizle' : 'göster'}`);
     if (isNavMode) hideNav();
     else showNav();
   };
 
-  // ── Sistem navigasyon barı gizleme/gösterme ───────────────────
-  // (app.json'da edgeToEdgeEnabled: false ile çalışır)
+  // ── Saat ve Pil Durumu ─────────────────────────────────────
+  const [time, setTime] = useState(new Date());
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
 
-  // Ekrandan çıkışta navigasyonu geri getir
   useEffect(() => {
-    NavigationBar.setVisibilityAsync('visible');
-    return () => { NavigationBar.setVisibilityAsync('visible'); };
+    if (!showClockAndBattery) return;
+
+    const updateStats = async () => {
+      setTime(new Date());
+      try {
+        const level = await Battery.getBatteryLevelAsync();
+        if (level >= 0) setBatteryLevel(Math.round(level * 100));
+      } catch (e) {}
+    };
+
+    updateStats();
+    const interval = setInterval(updateStats, 30000);
+
+    const batterySub = Battery.addBatteryLevelListener(({ batteryLevel }) => {
+      setBatteryLevel(Math.round(batteryLevel * 100));
+    });
+
+    return () => {
+      clearInterval(interval);
+      batterySub.remove();
+    };
+  }, [showClockAndBattery]);
+
+  // ── Okuma Süresi Takibi ────────────────────────────────────
+  useEffect(() => {
+    if (!enableReadingTracking || !targetBookId) return;
+
+    const interval = setInterval(() => {
+      addReadingTime(targetBookId, 60);
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, [enableReadingTracking, targetBookId, addReadingTime]);
+
+  // ── Navigasyon Zaman Aşımı (7 saniye) ──────────────────────
+  const navTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (isNavMode) {
+      if (navTimeoutRef.current) clearTimeout(navTimeoutRef.current);
+      navTimeoutRef.current = setTimeout(() => {
+        hideNav();
+      }, 7000);
+    } else {
+      if (navTimeoutRef.current) clearTimeout(navTimeoutRef.current);
+    }
+    return () => {
+      if (navTimeoutRef.current) clearTimeout(navTimeoutRef.current);
+    };
+  }, [isNavMode, hideNav]);
+
+  // Okuma modunda sistem gezinti çubuğunu gizle (overlay-swipe: üzerine biner, layout etkilemez)
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      NavigationBar.setBehaviorAsync('overlay-swipe');
+      NavigationBar.setVisibilityAsync('hidden');
+    }
+    return () => {
+      if (Platform.OS === 'android') {
+        NavigationBar.setBehaviorAsync('inset-touch');
+        NavigationBar.setVisibilityAsync('visible');
+      }
+    };
   }, []);
 
   // ── Drawer ────────────────────────────────────────────────────
   const openDrawerRef = useRef(() => {});
   const openDrawer = () => {
+    console.log('[Reader][Drawer] Açılıyor');
     if (isNavMode) hideNav();
     setIsDrawerOpen(true);
     Animated.timing(slideAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start();
   };
   const closeDrawer = () => {
+    console.log('[Reader][Drawer] Kapatılıyor');
     Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 200, useNativeDriver: true })
       .start(() => setIsDrawerOpen(false));
   };
@@ -151,7 +254,7 @@ export default function ReaderScreen() {
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (evt, g) => {
-        return evt.nativeEvent.pageX > width * 0.8
+        return evt.nativeEvent.pageX > width * 0.9
           && g.dx < -10
           && Math.abs(g.dx) > Math.abs(g.dy) * 1.2;
       },
@@ -192,7 +295,11 @@ export default function ReaderScreen() {
 
         if (targetChap) {
           if (targetChap.id !== targetChapterId) {
-            updateCurrentChapter(targetBookId!, targetChap.id);
+            if (isEditMode) {
+              Alert.alert('Düzenleme Modu', 'Bölüm geçişi yapmadan önce düzenlemeyi kaydedin veya iptal edin.');
+            } else {
+              updateCurrentChapter(targetBookId!, targetChap.id);
+            }
           } else if (anchor) {
             webViewRef.current?.injectJavaScript(`
               var el = document.getElementById('${anchor}') || document.getElementsByName('${anchor}')[0];
@@ -214,6 +321,7 @@ export default function ReaderScreen() {
     if (!book?.chapters) return;
     const chapter = book.chapters.find(c => c.id === targetChapterId) || book.chapters[0];
     if (!chapter) return;
+    console.log(`[Reader][Chapter] Yükleniyor: ${chapter.title || chapter.id}`);
     setIsLoading(true);
     FileSystem.readAsStringAsync(chapter.fullPath, { encoding: 'base64' })
       .then(async b64 => {
@@ -304,6 +412,29 @@ export default function ReaderScreen() {
     webViewRef.current?.injectJavaScript(`
       document.body.contentEditable="${isEditMode}";
       document.body.style.outline="${isEditMode?'2px dashed #F59E0B':'none'}";
+      if (${isEditMode}) {
+        if (!window.__kbScrollSetup) {
+          window.__kbScrollSetup = true;
+          document.addEventListener('selectionchange', function() {
+            var sel = window.getSelection();
+            if (!sel || sel.rangeCount === 0) return;
+            var range = sel.getRangeAt(0);
+            var rect = range.getBoundingClientRect();
+            var viewH = window.innerHeight;
+            if (rect.bottom > viewH * 0.6) {
+              window.scrollBy({ top: rect.bottom - viewH * 0.55, behavior: 'smooth' });
+            }
+          });
+          document.addEventListener('focusin', function(e) {
+            setTimeout(function() {
+              var el = document.activeElement;
+              if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+          });
+        }
+      } else {
+        window.__kbScrollSetup = false;
+      }
       true;
     `);
   }, [isEditMode]);
@@ -324,13 +455,22 @@ export default function ReaderScreen() {
           document.body.style.padding = '${insets.top + 8}px 16px 16px 16px';
           document.body.style.margin = '0';
           document.body.style.boxSizing = 'border-box';
-          // Pozisyonu hesapla
+          // Pozisyonu hesapla (sadece bir kere maxPage belirlenir)
           setTimeout(function() {
-            var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
-            window.currentPage = Math.round(savedPct * maxPage);
-            document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
+            var oldTransform = document.body.style.transform;
+            document.body.style.transform = 'none';
+            var sw = document.documentElement.scrollWidth || document.body.scrollWidth;
+            document.body.style.transform = oldTransform;
+            var iw = window.innerWidth;
+            window.maxPage = Math.max(0, Math.ceil(sw / iw) - 1);
+            window.currentPage = Math.round(savedPct * window.maxPage);
+            // bounds check
+            window.currentPage = Math.min(Math.max(0, window.currentPage), window.maxPage);
+            document.body.style.transform = 'translateX(-' + (window.currentPage * iw) + 'px)';
             document.body.style.transition = 'transform 0.25s ease-out';
-          }, 50);
+            window.__isInitialized = true;
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: 'INIT', sw: sw, iw: iw, maxPage: window.maxPage, currentPage: window.currentPage }));
+          }, 150);
         } else {
           document.documentElement.style.overflow = '';
           document.body.style.transition = 'none';
@@ -340,7 +480,7 @@ export default function ReaderScreen() {
           document.body.style.height = 'auto';
           document.body.style.overflowY = 'auto';
           document.body.style.overflowX = 'hidden';
-          document.body.style.padding = '16px';
+          document.body.style.padding = '16px 16px ${scrollBuffer}vh 16px';
           // Pozisyonu hesapla
           setTimeout(function() {
             window.scrollTo(0, savedPct * Math.max(1, document.body.scrollHeight - window.innerHeight));
@@ -349,7 +489,19 @@ export default function ReaderScreen() {
       } catch(e) {}
       true;
     `);
-  }, [readerMode]);
+  }, [readerMode, width, insets.top, scrollBuffer]);
+
+  // Mod değiştiğinde WebView içindeki durumu güncelle
+  useEffect(() => {
+    if (isWebViewReady) {
+      webViewRef.current?.injectJavaScript(`
+        (function(){
+          window.isPaged = ${readerMode === 'paged'};
+          console.log('[WebView][Mode] Updated to: ' + (window.isPaged ? 'paged' : 'scroll'));
+        })(); true;
+      `);
+    }
+  }, [readerMode, isWebViewReady]);
 
   const initScript = `
     (function(){
@@ -376,13 +528,17 @@ export default function ReaderScreen() {
         document.body.style.boxSizing = 'border-box';
         document.body.style.transform = 'translateX(0px)';
       } else {
-        document.body.style.padding='${insets.top + 8}px 16px 16px 16px';
+        document.body.style.padding='${insets.top + 8}px 16px ${scrollBuffer}vh 16px';
         document.body.style.boxSizing='border-box';
         document.body.style.margin='0';
       }
 
       var style = document.createElement('style');
-      style.innerHTML = '* { max-width: 100% !important; word-wrap: break-word; overflow-wrap: break-word; box-sizing: border-box; } img { max-width: 100% !important; width: 100% !important; height: auto !important; display: block; margin: 0 auto; } video, iframe { max-width: 100% !important; height: auto !important; display: block; } svg { max-width: 100% !important; height: auto !important; } pre, code { max-width: 100%; white-space: pre-wrap; }';
+      style.innerHTML = '* { max-width: 100% !important; word-wrap: break-word; overflow-wrap: break-word; box-sizing: border-box; } ' +
+                        'img { max-width: 100% !important; max-height: 85vh !important; width: auto !important; height: auto !important; display: block; margin: 0 auto; object-fit: contain; } ' +
+                        'video, iframe { max-width: 100% !important; max-height: 85vh !important; display: block; } ' +
+                        'svg { max-width: 100% !important; max-height: 85vh !important; } ' +
+                        'pre, code { max-width: 100%; white-space: pre-wrap; }';
       document.head.appendChild(style);
 
       var endReachCount = 0;
@@ -390,11 +546,15 @@ export default function ReaderScreen() {
       var lastReachTime = 0;
       var lastTopReachTime = 0;
       window.currentPage = 0;
+      window.maxPage = 0;
+      window.__isInitialized = false;
+      window.__isNavigating = false;
 
-      function updatePagedProgress() {
-        var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
-        var pct = window.currentPage / Math.max(1, maxPage);
+      function updatePagedProgress(actionName) {
+        var iw = window.innerWidth;
+        var pct = window.maxPage > 0 ? (window.currentPage / window.maxPage) : 0;
         window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SCROLL', pct: Math.min(1, Math.max(0, pct)) }));
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: actionName || 'UPDATE', sw: 0, iw: iw, maxPage: window.maxPage, currentPage: window.currentPage }));
       }
 
       var lastScrollMsgTime = 0;
@@ -421,6 +581,7 @@ export default function ReaderScreen() {
       document.addEventListener('touchstart', function(e) { touchStartYScroll = e.touches[0].clientY; }, { passive: true });
       document.addEventListener('touchend', function(e) {
         if (window.isPaged) return;
+        if (document.body.contentEditable === 'true') return;
         var dy = e.changedTouches[0].clientY - touchStartYScroll;
         var atBottom2 = (window.innerHeight + Math.ceil(window.scrollY)) >= document.body.offsetHeight - 80;
         var atTop2 = window.scrollY <= 10;
@@ -452,36 +613,65 @@ export default function ReaderScreen() {
         startY = e.touches[0].clientY;
       }, { passive: true });
 
+      window.goNext = function() {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: 'goNext_CALLED', sw: 0, iw: window.innerWidth, maxPage: window.maxPage, currentPage: window.currentPage, isPaged: window.isPaged, init: window.__isInitialized, nav: window.__isNavigating }));
+        if (!window.__isInitialized || window.__isNavigating || !window.isPaged) return;
+        var pageW = window.innerWidth;
+        if (window.currentPage >= window.maxPage) {
+          window.__isNavigating = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type:'END_OF_CHAPTER', sw: window.maxPage, iw: pageW, currentPage: window.currentPage, maxPage: window.maxPage }));
+        } else {
+          window.currentPage++;
+          document.body.style.transform = 'translateX(-' + (window.currentPage * pageW) + 'px)';
+          updatePagedProgress('GO_NEXT');
+        }
+      };
+
+      window.goPrev = function() {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: 'goPrev_CALLED', sw: 0, iw: window.innerWidth, maxPage: window.maxPage, currentPage: window.currentPage, isPaged: window.isPaged, init: window.__isInitialized, nav: window.__isNavigating }));
+        if (!window.__isInitialized || window.__isNavigating || !window.isPaged) return;
+        var pageW = window.innerWidth;
+        if (window.currentPage <= 0) {
+          window.__isNavigating = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type:'START_OF_CHAPTER', sw: window.maxPage, iw: pageW, currentPage: window.currentPage }));
+        } else {
+          window.currentPage--;
+          document.body.style.transform = 'translateX(-' + (window.currentPage * pageW) + 'px)';
+          updatePagedProgress('GO_PREV');
+        }
+      };
+
       document.addEventListener('touchend', function(e) {
-        if(!window.isPaged || document.body.contentEditable === "true" || window.getSelection().toString() !== "" || !window.__webViewReady) return;
+        if(!window.isPaged || document.body.contentEditable === "true" || window.getSelection().toString() !== "" || !window.__webViewReady || !window.__isInitialized || window.__isNavigating) return;
         var dx = e.changedTouches[0].clientX - startX;
         var dy = e.changedTouches[0].clientY - startY;
 
         if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
-          var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
-          if (dx < 0) { // Sola kaydır (İleri)
-            if (window.currentPage >= maxPage) {
-               window.ReactNativeWebView.postMessage(JSON.stringify({ type:'END_OF_CHAPTER' }));
-               endReachCount = 0;
-            } else {
-               window.currentPage++;
-               document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
-               updatePagedProgress();
-               endReachCount = 0;
-            }
-          } else { // Sağa kaydır (Geri)
-            if (window.currentPage <= 0) {
-               window.ReactNativeWebView.postMessage(JSON.stringify({ type:'START_OF_CHAPTER' }));
-               topReachCount = 0;
-            } else {
-               window.currentPage--;
-               document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
-               updatePagedProgress();
-               endReachCount = 0;
-            }
-          }
+          if (dx < 0) window.goNext();
+          else window.goPrev();
         }
       }, { passive: false });
+
+      // Layout sonrası webViewReady başlatılıyor (initScript'te timeout ile)
+      if (window.isPaged) {
+        setTimeout(function() { 
+          var oldTransform = document.body.style.transform;
+          document.body.style.transform = 'none';
+          var sw = document.documentElement.scrollWidth || document.body.scrollWidth;
+          document.body.style.transform = oldTransform;
+          var iw = window.innerWidth;
+          window.maxPage = Math.max(0, Math.ceil(sw / iw) - 1);
+          // Geri sayfa yönlendirmesi veya kayıttan dönme durumu için:
+          window.currentPage = Math.round(${scrollPct} * window.maxPage);
+          window.currentPage = Math.min(Math.max(0, window.currentPage), window.maxPage);
+          document.body.style.transform = 'translateX(-' + (window.currentPage * iw) + 'px)';
+          document.body.style.transition = 'transform 0.25s ease-out';
+          window.__isInitialized = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: 'INIT_SCRIPT', sw: sw, iw: iw, maxPage: window.maxPage, currentPage: window.currentPage }));
+        }, 200);
+      } else {
+        window.__isInitialized = true;
+      }
 
       // WebView hazır bayrağı — yükleme sırasında swipe'ı engelle
       window.__webViewReady = false;
@@ -497,16 +687,23 @@ export default function ReaderScreen() {
         }
       });
 
-      // Dokunma yönetimi (Tap vs Scroll)
+      // Dokunma yönetimi: paged modda 1-2-1 bölgesi, scroll modda toggle
       document.addEventListener('click', function(e) {
         if(document.body.contentEditable==="true") return;
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'TOGGLE_NAV' }));
+        if (window.isPaged) {
+          var ratio = e.clientX / window.innerWidth;
+          var zone = ratio < 0.25 ? 'left' : ratio > 0.75 ? 'right' : 'mid';
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'TAP_ZONE', zone: zone }));
+        } else {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'TOGGLE_NAV' }));
+        }
       });
     })(); true;
   `;
 
   // ── Handlers ───────────────────────────────────────────────
   const saveEdits = () => {
+    console.log('[Reader][Edit] Düzenleme kaydediliyor');
     setIsEditMode(false);
     // Düzenleme kaydedilince WebView yeniden yüklenecek; scroll pozisyonunu koru
     pendingScrollRestore.current = scrollPct;
@@ -518,7 +715,11 @@ export default function ReaderScreen() {
   const handleMsg = (event: any) => {
     try {
       const d = JSON.parse(event.nativeEvent.data);
+      if (d.type === 'DEBUG_PAGE') {
+        console.log(`[WebView][Pagination][${d.action}] sw: ${Math.round(d.sw)}, iw: ${Math.round(d.iw)}, currentPage: ${d.currentPage}/${d.maxPage}`);
+      }
       if (d.type === 'SAVE_EDIT' && d.html) {
+        console.log(`[Reader][Edit] Kaydedildi — ${d.html.length} karakter`);
         addVersion(d.html);
         const titleMatch = d.html.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i) || d.html.match(/<title[^>]*>(.*?)<\/title>/i);
         if (titleMatch && titleMatch[1]) {
@@ -537,15 +738,28 @@ export default function ReaderScreen() {
         }, 1000);
       }
       if (d.type === 'END_OF_CHAPTER' && hasNext) {
-        updateCurrentChapter(targetBookId!, book!.chapters![chapterIdx + 1].id);
+        console.log(`[Reader][Nav] Bölüm sonu → sonraki (WebView info - sw: ${d.sw}, iw: ${d.iw}, current: ${d.currentPage}, max: ${d.maxPage})`);
+        if (!isEditMode) updateCurrentChapter(targetBookId!, book!.chapters![chapterIdx + 1].id);
       }
       if (d.type === 'START_OF_CHAPTER' && hasPrev) {
-        isNavigatingBack.current = true;
-        setIsWebViewReady(false);
-        updateCurrentChapter(targetBookId!, book!.chapters![chapterIdx - 1].id);
+        console.log(`[Reader][Nav] Bölüm başı → önceki (WebView info - sw: ${d.sw}, iw: ${d.iw}, current: ${d.currentPage})`);
+        if (!isEditMode) {
+          isNavigatingBack.current = true;
+          setIsWebViewReady(false);
+          updateCurrentChapter(targetBookId!, book!.chapters![chapterIdx - 1].id);
+        }
       }
       if (d.type === 'READY') {
         setIsWebViewReady(true);
+      }
+      if (d.type === 'TAP_ZONE' && !isEditMode) {
+        if (d.zone === 'mid') {
+          toggleNav();
+        } else if (d.zone === 'left') {
+          webViewRef.current?.injectJavaScript('if(window.goPrev) window.goPrev(); true;');
+        } else if (d.zone === 'right') {
+          webViewRef.current?.injectJavaScript('if(window.goNext) window.goNext(); true;');
+        }
       }
       if (d.type === 'TOGGLE_NAV' && !isEditMode) {
         toggleNav();
@@ -561,27 +775,11 @@ export default function ReaderScreen() {
   };
 
   const handleVolumeKey = useCallback((dir: 'next' | 'prev') => {
+    console.log('[Reader][Volume] handleVolumeKey called: ' + dir + ' (Mode: ' + readerMode + ')');
     if (readerMode === 'paged') {
-      const js = dir === 'next' 
-        ? `(function(){
-            var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
-            if (window.currentPage < maxPage) {
-              window.currentPage++;
-              document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
-              if (typeof updatePagedProgress === 'function') updatePagedProgress();
-            } else {
-              window.ReactNativeWebView.postMessage(JSON.stringify({ type:'END_OF_CHAPTER' }));
-            }
-          })(); true;`
-        : `(function(){
-            if (window.currentPage > 0) {
-              window.currentPage--;
-              document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
-              if (typeof updatePagedProgress === 'function') updatePagedProgress();
-            } else {
-              window.ReactNativeWebView.postMessage(JSON.stringify({ type:'START_OF_CHAPTER' }));
-            }
-          })(); true;`;
+      const js = dir === 'next'
+        ? `window.ReactNativeWebView.postMessage(JSON.stringify({type:'DEBUG_PAGE',action:'VOL_INJECT',sw:0,iw:0,maxPage:window.maxPage,currentPage:window.currentPage})); if(window.goNext) window.goNext(); else window.ReactNativeWebView.postMessage(JSON.stringify({type:'DEBUG_PAGE',action:'goNext_UNDEFINED',sw:0,iw:0,maxPage:0,currentPage:0})); true;`
+        : `window.ReactNativeWebView.postMessage(JSON.stringify({type:'DEBUG_PAGE',action:'VOL_INJECT',sw:0,iw:0,maxPage:window.maxPage,currentPage:window.currentPage})); if(window.goPrev) window.goPrev(); else window.ReactNativeWebView.postMessage(JSON.stringify({type:'DEBUG_PAGE',action:'goPrev_UNDEFINED',sw:0,iw:0,maxPage:0,currentPage:0})); true;`;
       webViewRef.current?.injectJavaScript(js);
     } else {
       const scrollAmt = Dimensions.get('window').height * 0.8;
@@ -592,21 +790,38 @@ export default function ReaderScreen() {
     }
   }, [readerMode]);
 
-  // ── Ses tuşları ile kontrol (expo go'da ses engelinden dolayı devre dışı)
-  // useEffect(() => {
-  //   let lastVol = -1;
-  //   const sub = VolumeManager.addVolumeListener((res) => {
-  //     if (lastVol === -1) { lastVol = res.volume; return; }
-  //     if (res.volume > lastVol || (res.volume === 1 && lastVol === 1)) {
-  //       handleVolumeKey('next');
-  //     } else if (res.volume < lastVol || (res.volume === 0 && lastVol === 0)) {
-  //       handleVolumeKey('prev');
-  //     }
-  //     lastVol = res.volume;
-  //   });
-  //   VolumeManager.showNativeVolumeUI(false);
-  //   return () => { sub.remove(); VolumeManager.showNativeVolumeUI(true); };
-  // }, [handleVolumeKey]);
+  // ── Ses tuşları ile kontrol (Native VolumeKeyModule)
+  const isNavModeRef = useRef(isNavMode);
+  useEffect(() => { isNavModeRef.current = isNavMode; }, [isNavMode]);
+  
+  useEffect(() => {
+    if (!enableVolumeNavigation) return;
+
+    console.log('[Reader][Volume] Native modül listener kuruluyor');
+
+    const sub = DeviceEventEmitter.addListener('onVolumeKey', (event: any) => {
+      const dir = event?.direction;
+      const navOpen = isNavModeRef.current;
+      console.log(`[Reader][Volume] Native: dir=${dir} navOpen=${navOpen}`);
+
+      if (navOpen) {
+        // Dock açıkken → ses kontrolünü sisteme bırak
+        if (VolumeManager) {
+          VolumeManager.getVolume().then((v: any) => {
+            const cur = v.volume;
+            const next = dir === 'up' ? Math.min(1, cur + 0.0625) : Math.max(0, cur - 0.0625);
+            VolumeManager.setVolume(next, { showUI: true });
+          });
+        }
+        return;
+      }
+
+      // Okuma modunda → sayfa çevir (ses seviyesi hiç değişmez)
+      handleVolumeKey(dir === 'up' ? 'next' : 'prev');
+    });
+
+    return () => { sub.remove(); };
+  }, [handleVolumeKey, enableVolumeNavigation]);
 
   const loadVersion = (id: string) => {
     const html = reconstructVersion(id);
@@ -615,20 +830,32 @@ export default function ReaderScreen() {
 
   const goChapter = (dir: 1 | -1) => {
     if (!book?.chapters) return;
+    if (isEditMode) {
+      Alert.alert('Düzenleme Modu', 'Bölüm geçişi yapmadan önce düzenlemeyi kaydedin veya iptal edin.');
+      return;
+    }
     const next = book.chapters[chapterIdx + dir];
-    if (next) updateCurrentChapter(targetBookId!, next.id);
+    if (next) {
+      console.log(`[Reader][Nav] Bölüm değiştir: ${dir > 0 ? 'sonraki' : 'önceki'} → ${next.title || next.id}`);
+      updateCurrentChapter(targetBookId!, next.id);
+    }
   };
 
   // ── Animasyon headerı yukarıdan gelmesi ───────────────────
   const headerTranslate = headerAnim.interpolate({ inputRange:[0,1], outputRange:[-150, 0] });
-  const dockTranslate   = dockAnim.interpolate({ inputRange:[0,1], outputRange:[100, 0] });
+  const dockTranslate   = dockAnim.interpolate({ inputRange:[0,1], outputRange:[250, 0] });
 
   // ─── RENDER ────────────────────────────────────────────────
   return (
-    <View style={[styles.screen, { backgroundColor: bgPreset.bg }]}>
+    <KeyboardAvoidingView
+      style={[styles.screen, { backgroundColor: bgPreset.bg }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : isEditMode ? 'height' : undefined}
+      keyboardVerticalOffset={0}
+    >
       <StatusBar
-        hidden={!isNavMode || isEditMode}
-        backgroundColor={theme.surface}
+        hidden={true}
+        backgroundColor="transparent"
+        translucent={true}
         style={isDarkMode ? 'light' : 'dark'}
       />
 
@@ -702,16 +929,17 @@ export default function ReaderScreen() {
                 webViewRef.current?.injectJavaScript(`
                   setTimeout(function() {
                     if (window.isPaged) {
-                      var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
+                      var iw = window.innerWidth;
+                      var maxPage = Math.max(0, Math.round(document.body.scrollWidth / iw) - 1);
                       window.currentPage = Math.round(${restorePct} * maxPage);
-                      document.body.style.transform = 'translateX(-' + (window.currentPage * window.innerWidth) + 'px)';
+                      document.body.style.transform = 'translateX(-' + (window.currentPage * iw) + 'px)';
                       if (typeof updatePagedProgress === 'function') updatePagedProgress();
                     } else {
                       window.scrollTo(0, ${restorePct} * Math.max(1, document.body.scrollHeight - window.innerHeight));
                     }
                     window.__webViewReady = true;
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
-                  }, 100);
+                  }, 150);
                   true;
                 `);
               } else if (isNavigatingBack.current) {
@@ -719,25 +947,25 @@ export default function ReaderScreen() {
                 webViewRef.current?.injectJavaScript(`
                   setTimeout(function() {
                     if (window.isPaged) {
-                      var maxPage = Math.max(0, Math.ceil(document.body.scrollWidth / window.innerWidth) - 1);
-                      window.currentPage = maxPage;
-                      document.body.style.transform = 'translateX(-' + (maxPage * window.innerWidth) + 'px)';
+                      var iw = window.innerWidth;
+                      var lastPage = Math.max(0, Math.round(document.body.scrollWidth / iw) - 1);
+                      window.currentPage = lastPage;
+                      document.body.style.transform = 'translateX(-' + (lastPage * iw) + 'px)';
                       if (typeof updatePagedProgress === 'function') updatePagedProgress();
                     } else {
                       window.scrollTo(0, document.body.scrollHeight);
                     }
                     window.__webViewReady = true;
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
-                  }, 50);
+                  }, 150);
                   true;
                 `);
               } else {
-                // Scroll gerekmese bile READY sinyali ile göster
                 webViewRef.current?.injectJavaScript(`
                   setTimeout(function() {
                     window.__webViewReady = true;
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
-                  }, 50);
+                  }, 100);
                   true;
                 `);
               }
@@ -757,7 +985,7 @@ export default function ReaderScreen() {
         style={[styles.dock, {
           transform: [{ translateY: dockTranslate }],
           opacity: dockAnim,
-          bottom: Math.max(insets.bottom, 48) + 16,
+          bottom: navBarHeight.current + 66,
         }]}>
         {/* ── NAV modu ── */}
         {dockMode === 'nav' && (
@@ -919,7 +1147,12 @@ export default function ReaderScreen() {
             <View style={styles.editBarBtns}>
               <TouchableOpacity
                 style={[styles.editBarBtn, { backgroundColor: theme.dangerLight }]}
-                onPress={() => setIsEditMode(false)}
+                onPress={() => {
+                  if (webViewRef.current && htmlContent) {
+                    webViewRef.current.injectJavaScript(`document.body.innerHTML = ${JSON.stringify(htmlContent)}; true;`);
+                  }
+                  setIsEditMode(false);
+                }}
               >
                 <Text style={[styles.editBarBtnText, { color: theme.danger }]}>✕ İptal</Text>
               </TouchableOpacity>
@@ -986,7 +1219,14 @@ export default function ReaderScreen() {
               return (
                 <TouchableOpacity
                   style={[styles.chapterRow, isActive && { backgroundColor: theme.primaryLight }]}
-                  onPress={() => { updateCurrentChapter(targetBookId!, item.id); closeDrawer(); }}
+                  onPress={() => {
+                    if (isEditMode) {
+                      Alert.alert('Düzenleme Modu', 'Bölüm geçişi yapmadan önce düzenlemeyi kaydedin veya iptal edin.');
+                      return;
+                    }
+                    updateCurrentChapter(targetBookId!, item.id);
+                    closeDrawer();
+                  }}
                 >
                   <View style={[styles.badge, isActive && { backgroundColor: theme.primary }]}>
                     <Text style={[styles.badgeText, isActive && styles.badgeTextActive]}>{index + 1}</Text>
@@ -1028,189 +1268,212 @@ export default function ReaderScreen() {
           />
         </View>
       </Animated.View>
-    </View>
+      {showClockAndBattery && !isNavMode && (
+        <View style={styles.statsOverlay}>
+          <Text style={[styles.statsText, { color: isDarkMode ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)' }]}>
+            {batteryLevel !== null ? `%${batteryLevel} · ` : ''}
+            {time.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
+          </Text>
+        </View>
+      )}
+    </KeyboardAvoidingView>
   );
 }
 
 // ─── STYLES ──────────────────────────────────────────────────
 // Renk/boyut değişikliği için → src/theme.ts
-const getStyles = (theme: AppTheme) => StyleSheet.create({
-  screen:  { flex: 1 },
-  content: { flex: 1 },
-  webview: { flex: 1 },
-  center:  { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 15 },
+const getStyles = (theme: AppTheme, width: number, height: number, insetsTop: number) => {
+  const DRAWER_WIDTH = width * 0.78;
+  
+  return StyleSheet.create({
+    screen:  { flex: 1 },
+    statsOverlay: {
+      position: 'absolute',
+      top: insetsTop + 8,
+      right: 16,
+      zIndex: 10,
+      pointerEvents: 'none',
+    },
+    statsText: {
+      fontSize: 11,
+      fontWeight: Typography.medium,
+    },
+    content: { flex: 1 },
+    webview: { flex: 1 },
+    center:  { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 15 },
 
-  // ─ Edit Mod Floating Bar ─
-  editBar: {
-    position: 'absolute', left: 16, right: 16, zIndex: 40,
-  },
-  editBarInner: {
-    backgroundColor: theme.surface,
-    borderRadius: Radius.xl,
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    ...Shadow.lg,
-  },
-  editBarLabel: {
-    fontSize: Typography.sm,
-    fontWeight: Typography.semiBold,
-    color: theme.textSecondary,
-  },
-  editBarBtns: { flexDirection: 'row', gap: Spacing.sm },
-  editBarBtn: {
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.lg,
-  },
-  editBarBtnText: { fontSize: Typography.sm, fontWeight: Typography.semiBold },
+    // ─ Edit Mod Floating Bar ─
+    editBar: {
+      position: 'absolute', left: 16, right: 16, zIndex: 40,
+    },
+    editBarInner: {
+      backgroundColor: theme.surface,
+      borderRadius: Radius.xl,
+      paddingHorizontal: Spacing.base,
+      paddingVertical: Spacing.md,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      ...Shadow.lg,
+    },
+    editBarLabel: {
+      fontSize: Typography.sm,
+      fontWeight: Typography.semiBold,
+      color: theme.textSecondary,
+    },
+    editBarBtns: { flexDirection: 'row', gap: Spacing.sm },
+    editBarBtn: {
+      paddingHorizontal: Spacing.base,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.lg,
+    },
+    editBarBtnText: { fontSize: Typography.sm, fontWeight: Typography.semiBold },
 
-  // ─ Üst Bar ─
-  topBar: {
-    backgroundColor: theme.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
-    paddingTop: 36, // cihazların çentiklerine ve kameralarına (Nothing Phone) ek güvenlik payı
-    ...Shadow.md,
-  },
-  topInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    minHeight: 48,
-  },
-  backBtn:  { width: 36, height: 36, justifyContent: 'center', alignItems: 'center' },
-  backText: { fontSize: 30, color: theme.textPrimary, lineHeight: 34, marginTop: -2 },
-  topTitle: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.semiBold, color: theme.textPrimary, marginHorizontal: Spacing.xs },
-  topRight: { flexDirection: 'row', gap: Spacing.xs },
-  smBtn:    { width: 34, height: 34, borderRadius: Radius.md, backgroundColor: theme.divider, justifyContent: 'center', alignItems: 'center' },
-  smBtnPrimary: { backgroundColor: theme.primary },
-  smBtnText: { fontSize: 15, color: theme.textPrimary },
+    // ─ Üst Bar ─
+    topBar: {
+      backgroundColor: theme.surface,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+      paddingTop: 36, // cihazların çentiklerine ve kameralarına (Nothing Phone) ek güvenlik payı
+      ...Shadow.md,
+    },
+    topInner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: Spacing.xs,
+      minHeight: 48,
+    },
+    backBtn:  { width: 36, height: 36, justifyContent: 'center', alignItems: 'center' },
+    backText: { fontSize: 30, color: theme.textPrimary, lineHeight: 34, marginTop: -2 },
+    topTitle: { flex: 1, fontSize: Typography.sm, fontWeight: Typography.semiBold, color: theme.textPrimary, marginHorizontal: Spacing.xs },
+    topRight: { flexDirection: 'row', gap: Spacing.xs },
+    smBtn:    { width: 34, height: 34, borderRadius: Radius.md, backgroundColor: theme.divider, justifyContent: 'center', alignItems: 'center' },
+    smBtnPrimary: { backgroundColor: theme.primary },
+    smBtnText: { fontSize: 15, color: theme.textPrimary },
 
-  // ─ Alt Dock ─
-  dock: {
-    position: 'absolute', bottom: 24, left: 16, right: 16,
-    backgroundColor: theme.surface,
-    borderRadius: Radius.xl,
-    paddingHorizontal: Spacing.base,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.md,
-    zIndex: 20,
-    ...Shadow.lg,
-  },
+    // ─ Alt Dock ─
+    dock: {
+      position: 'absolute', bottom: 24, left: 16, right: 16,
+      backgroundColor: theme.surface,
+      borderRadius: Radius.xl,
+      paddingHorizontal: Spacing.base,
+      paddingTop: Spacing.md,
+      paddingBottom: Spacing.md,
+      zIndex: 20,
+      ...Shadow.lg,
+    },
 
-  // İlerleme çubuğu
-  progressTrack: {
-    height: 5,
-    backgroundColor: theme.divider,
-    borderRadius: Radius.full,
-    marginBottom: Spacing.md,
-    position: 'relative',
-    overflow: 'visible',
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: theme.primary,
-    borderRadius: Radius.full,
-  },
-  progressThumb: {
-    position: 'absolute',
-    top: -4,
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: theme.primary,
-    marginLeft: -6,
-  },
+    // İlerleme çubuğu
+    progressTrack: {
+      height: 5,
+      backgroundColor: theme.divider,
+      borderRadius: Radius.full,
+      marginBottom: Spacing.md,
+      position: 'relative',
+      overflow: 'visible',
+    },
+    progressFill: {
+      height: '100%',
+      backgroundColor: theme.primary,
+      borderRadius: Radius.full,
+    },
+    progressThumb: {
+      position: 'absolute',
+      top: -4,
+      width: 13,
+      height: 13,
+      borderRadius: 7,
+      backgroundColor: theme.primary,
+      marginLeft: -6,
+    },
 
-  // Nav butonları
-  dockRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dockBtn: {
-    width: 44, height: 44,
-    borderRadius: Radius.full,
-    backgroundColor: theme.divider,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  dockBtnDisabled: { opacity: 0.3 },
-  dockBtnText: { fontSize: 20, color: theme.textPrimary },
-  dockIconBtn: {
-    width: 52, height: 52,
-    borderRadius: Radius.full,
-    justifyContent: 'center', alignItems: 'center',
-    ...Shadow.sm,
-  },
-  dockIconBtnFont: { backgroundColor: theme.primary },
-  dockIconBtnBg:   { backgroundColor: theme.warning },
-  dockIconBtnText: { color: '#fff', fontWeight: Typography.bold, fontSize: Typography.sm },
-  bgDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 2, borderColor: 'rgba(255,255,255,0.5)' },
+    // Nav butonları
+    dockRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    dockBtn: {
+      width: 44, height: 44,
+      borderRadius: Radius.full,
+      backgroundColor: theme.divider,
+      justifyContent: 'center', alignItems: 'center',
+    },
+    dockBtnDisabled: { opacity: 0.3 },
+    dockBtnText: { fontSize: 20, color: theme.textPrimary },
+    dockIconBtn: {
+      width: 52, height: 52,
+      borderRadius: Radius.full,
+      justifyContent: 'center', alignItems: 'center',
+      ...Shadow.sm,
+    },
+    dockIconBtnFont: { backgroundColor: theme.primary },
+    dockIconBtnBg:   { backgroundColor: theme.warning },
+    dockIconBtnText: { color: '#fff', fontWeight: Typography.bold, fontSize: Typography.sm },
+    bgDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 2, borderColor: 'rgba(255,255,255,0.5)' },
 
-  // Font Paneli
-  fontPanel: { paddingBottom: Spacing.sm },
-  fontPanelClose: { marginBottom: Spacing.sm },
-  fontPanelCloseText: { color: theme.primary, fontSize: Typography.sm, fontWeight: Typography.semiBold },
-  fontRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  fontAdjBtn: {
-    width: 64, height: 64,
-    borderRadius: Radius.lg,
-    backgroundColor: theme.divider,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  fontAdjText: { fontSize: 28, fontWeight: Typography.bold, color: theme.textPrimary },
-  fontCenter: { alignItems: 'center' },
-  fontLabel:  { fontSize: Typography.lg, fontWeight: Typography.bold, color: theme.textSecondary },
-  fontValue:  { fontSize: Typography.sm, color: theme.textMuted },
+    // Font Paneli
+    fontPanel: { paddingBottom: Spacing.sm },
+    fontPanelClose: { marginBottom: Spacing.sm },
+    fontPanelCloseText: { color: theme.primary, fontSize: Typography.sm, fontWeight: Typography.semiBold },
+    fontRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    fontAdjBtn: {
+      width: 64, height: 64,
+      borderRadius: Radius.lg,
+      backgroundColor: theme.divider,
+      justifyContent: 'center', alignItems: 'center',
+    },
+    fontAdjText: { fontSize: 28, fontWeight: Typography.bold, color: theme.textPrimary },
+    fontCenter: { alignItems: 'center' },
+    fontLabel:  { fontSize: Typography.lg, fontWeight: Typography.bold, color: theme.textSecondary },
+    fontValue:  { fontSize: Typography.sm, color: theme.textMuted },
 
-  // BG Paneli
-  bgPanel: { paddingBottom: Spacing.sm },
-  bgSwatches: { flexDirection: 'row', justifyContent: 'space-between' },
-  swatch: {
-    flex: 1, marginHorizontal: 3,
-    height: 48, borderRadius: Radius.md,
-    borderWidth: 1,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  swatchActive: { borderWidth: 3 },
-  swatchLabel: { fontSize: Typography.xs, fontWeight: Typography.semiBold },
+    // BG Paneli
+    bgPanel: { paddingBottom: Spacing.sm },
+    bgSwatches: { flexDirection: 'row', justifyContent: 'space-between' },
+    swatch: {
+      flex: 1, marginHorizontal: 3,
+      height: 48, borderRadius: Radius.md,
+      borderWidth: 1,
+      justifyContent: 'center', alignItems: 'center',
+    },
+    swatchActive: { borderWidth: 3 },
+    swatchLabel: { fontSize: Typography.xs, fontWeight: Typography.semiBold },
 
-  // ─ Sağ Çekmece ─
-  drawer: {
-    position: 'absolute', top: 0, bottom: 0, right: 0,
-    width: DRAWER_WIDTH, backgroundColor: theme.surface,
-    zIndex: 20, ...Shadow.lg,
-  },
-  drawerHeader: {
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.md,
-    backgroundColor: theme.primaryLight,
-    borderBottomWidth: 1, borderBottomColor: theme.border,
-  },
-  drawerBookTitle: { fontSize: Typography.sm, fontWeight: Typography.semiBold, color: theme.primary },
+    // ─ Sağ Çekmece ─
+    drawer: {
+      position: 'absolute', top: 0, bottom: 0, right: 0,
+      width: DRAWER_WIDTH, backgroundColor: theme.surface,
+      zIndex: 20, ...Shadow.lg,
+    },
+    drawerHeader: {
+      paddingHorizontal: Spacing.base,
+      paddingVertical: Spacing.md,
+      backgroundColor: theme.primaryLight,
+      borderBottomWidth: 1, borderBottomColor: theme.border,
+    },
+    drawerBookTitle: { fontSize: Typography.sm, fontWeight: Typography.semiBold, color: theme.primary },
 
-  tabBar:       { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: theme.border },
-  tabItem:      { flex: 1, paddingVertical: Spacing.md, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  tabItemActive: { borderBottomColor: theme.primary },
-  tabText:       { fontSize: Typography.sm, color: theme.textSecondary, fontWeight: Typography.medium },
-  tabTextActive: { color: theme.primary, fontWeight: Typography.bold },
+    tabBar:       { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: theme.border },
+    tabItem:      { flex: 1, paddingVertical: Spacing.md, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+    tabItemActive: { borderBottomColor: theme.primary },
+    tabText:       { fontSize: Typography.sm, color: theme.textSecondary, fontWeight: Typography.medium },
+    tabTextActive: { color: theme.primary, fontWeight: Typography.bold },
 
-  chapterRow:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: theme.divider },
-  chapterRowActive: { backgroundColor: theme.primaryLight },
-  badge:            { width: 28, height: 28, borderRadius: Radius.full, backgroundColor: theme.divider, justifyContent: 'center', alignItems: 'center', marginRight: Spacing.md },
-  badgeActive:      { backgroundColor: theme.primary },
-  badgeText:        { fontSize: Typography.xs, fontWeight: Typography.bold, color: theme.textSecondary },
-  badgeTextActive:  { color: '#fff' },
-  chapterLabel:       { flex: 1, fontSize: Typography.sm, color: theme.textSecondary, lineHeight: 18 },
-  chapterLabelActive: { color: theme.primary, fontWeight: Typography.semiBold },
+    chapterRow:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: theme.divider },
+    chapterRowActive: { backgroundColor: theme.primaryLight },
+    badge:            { width: 28, height: 28, borderRadius: Radius.full, backgroundColor: theme.divider, justifyContent: 'center', alignItems: 'center', marginRight: Spacing.md },
+    badgeActive:      { backgroundColor: theme.primary },
+    badgeText:        { fontSize: Typography.xs, fontWeight: Typography.bold, color: theme.textSecondary },
+    badgeTextActive:  { color: '#fff' },
+    chapterLabel:       { flex: 1, fontSize: Typography.sm, color: theme.textSecondary, lineHeight: 18 },
+    chapterLabelActive: { color: theme.primary, fontWeight: Typography.semiBold },
 
-  versionRow:     { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.base, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: theme.divider },
-  versionRowOrig: { backgroundColor: theme.divider },
-  vDot:           { width: 10, height: 10, borderRadius: 5, backgroundColor: theme.primary, marginRight: Spacing.md },
-  vDotOrig:       { backgroundColor: theme.textMuted },
-  vName:          { fontSize: Typography.sm, fontWeight: Typography.semiBold, color: theme.textPrimary },
-  vDate:          { fontSize: Typography.xs, color: theme.textMuted, marginTop: 2 },
-  emptyTab:       { textAlign: 'center', color: theme.textMuted, marginTop: Spacing.xl, fontSize: Typography.sm, fontStyle: 'italic' },
-});
+    versionRow:     { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.base, paddingVertical: Spacing.md, borderBottomWidth: 1, borderBottomColor: theme.divider },
+    versionRowOrig: { backgroundColor: theme.divider },
+    vDot:           { width: 10, height: 10, borderRadius: 5, backgroundColor: theme.primary, marginRight: Spacing.md },
+    vDotOrig:       { backgroundColor: theme.textMuted },
+    vName:          { fontSize: Typography.sm, fontWeight: Typography.semiBold, color: theme.textPrimary },
+    vDate:          { fontSize: Typography.xs, color: theme.textMuted, marginTop: 2 },
+    emptyTab:       { textAlign: 'center', color: theme.textMuted, marginTop: Spacing.xl, fontSize: Typography.sm, fontStyle: 'italic' },
+  });
+};
 

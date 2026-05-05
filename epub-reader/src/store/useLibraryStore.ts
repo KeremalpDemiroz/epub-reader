@@ -22,6 +22,7 @@ export interface Book {
   currentScrollPct?: number;
   coverImagePath?: string | null;
   tagIds?: string[];
+  totalReadTimeSeconds?: number;
 }
 
 interface LibraryState {
@@ -37,6 +38,7 @@ interface LibraryState {
   addTag: (tag: Tag) => void;
   removeTag: (id: string) => void;
   toggleBookTag: (bookId: string, tagId: string) => void;
+  addReadingTime: (bookId: string, seconds: number) => void;
 }
 
 const fileStorage: StateStorage = {
@@ -60,24 +62,18 @@ export const useLibraryStore = create<LibraryState>()(
     (set, get) => ({
       books: [],
       tags: [],
-      addBook: (book) => set({ books: [...get().books.filter(b => b.id !== book.id), book] }),
-      removeBook: async (id) => {
-        // 1. Fiziksel epub klasörünü sil
-        try {
-          await FileSystem.deleteAsync(EPUB_STORAGE_DIR + id, { idempotent: true });
-        } catch (e) {
-          console.warn('Fiziksel dosya silinemedi:', e);
-        }
-        // 2. Store'dan kaldır
+      addBook: (book) => { console.log(`[Store][Library] addBook: ${book.title} (${book.chapters?.length || 0} bölüm)`); set({ books: [...get().books.filter(b => b.id !== book.id), book] }); },
+      removeBook: (id) => {
+        console.log(`[Store][Library] removeBook: ${id}`);
         set({ books: get().books.filter(b => b.id !== id) });
       },
       getBook: (id) => get().books.find(b => b.id === id),
       updateLastRead: (id) => set({
         books: get().books.map(b => b.id === id ? { ...b, lastReadAt: Date.now() } : b)
       }),
-      updateCurrentChapter: (bookId, chapterId) => set({
+      updateCurrentChapter: (bookId, chapterId) => { console.log(`[Store][Library] updateCurrentChapter: ${bookId} → ${chapterId}`); set({
         books: get().books.map(b => b.id === bookId ? { ...b, currentChapterId: chapterId, currentScrollPct: 0 } : b)
-      }),
+      }); },
       updateChapterTitle: (bookId, chapterId, title) => set({
         books: get().books.map(b => {
           if (b.id !== bookId || !b.chapters) return b;
@@ -90,13 +86,13 @@ export const useLibraryStore = create<LibraryState>()(
       updateScrollPosition: (bookId, pct) => set({
         books: get().books.map(b => b.id === bookId ? { ...b, currentScrollPct: pct } : b)
       }),
-      addTag: (tag) => set({
+      addTag: (tag) => { console.log(`[Store][Library] addTag: ${tag.name}`); set({
         tags: [...get().tags.filter(t => t.id !== tag.id), tag]
-      }),
-      removeTag: (id) => set({
+      }); },
+      removeTag: (id) => { console.log(`[Store][Library] removeTag: ${id}`); set({
         tags: get().tags.filter(t => t.id !== id),
         books: get().books.map(b => ({ ...b, tagIds: b.tagIds?.filter(tId => tId !== id) }))
-      }),
+      }); },
       toggleBookTag: (bookId, tagId) => set({
         books: get().books.map(b => {
           if (b.id !== bookId) return b;
@@ -107,6 +103,11 @@ export const useLibraryStore = create<LibraryState>()(
             return { ...b, tagIds: [...tags, tagId] };
           }
         })
+      }),
+      addReadingTime: (bookId, seconds) => set({
+        books: get().books.map(b => 
+          b.id === bookId ? { ...b, totalReadTimeSeconds: (b.totalReadTimeSeconds || 0) + seconds } : b
+        )
       })
     }),
     {
