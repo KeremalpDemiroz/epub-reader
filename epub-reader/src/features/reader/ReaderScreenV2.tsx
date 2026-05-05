@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Animated, Platform,
-  KeyboardAvoidingView, DeviceEventEmitter
+  KeyboardAvoidingView, DeviceEventEmitter, Keyboard, BackHandler
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
@@ -50,6 +50,7 @@ export default function ReaderScreenV2() {
   // ── State ──
   const [isLoading, setIsLoading] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
   const [isNavMode, setIsNavMode] = useState(false);
   const [dockMode, setDockMode] = useState<'nav' | 'font' | 'bg' | 'layout' | 'editPrompt'>('nav');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -100,6 +101,15 @@ export default function ReaderScreenV2() {
       setDockMode('nav');
     });
   }, [headerAnim, dockAnim]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const toggleNav = useCallback(() => {
     if (isNavMode) hideNav(); else showNav();
@@ -304,8 +314,22 @@ export default function ReaderScreenV2() {
       window.__isInitialized = false;
       window.__isNavigating = false;
 
-      function updatePagedProgress(actionName) {
+      function updatePagedProgress(actionName, cursorAbsoluteX) {
         var iw = window.innerWidth;
+        var oldTransform = document.body.style.transform;
+        document.body.style.transform = 'none';
+        var sw = document.documentElement.scrollWidth || document.body.scrollWidth;
+        document.body.style.transform = oldTransform;
+        window.maxPage = Math.max(0, Math.round(sw / iw) - 1);
+        
+        if (cursorAbsoluteX !== null && cursorAbsoluteX !== undefined && !isNaN(cursorAbsoluteX)) {
+          window.currentPage = Math.floor(cursorAbsoluteX / iw);
+        }
+        
+        window.scrollTo(window.scrollX, 0); // Ekran düzeltmesi için Y eksenini sıfırla
+        window.currentPage = Math.min(Math.max(0, window.currentPage), window.maxPage);
+        document.body.style.transform = 'translateX(-' + (window.currentPage * iw) + 'px)';
+        
         var pct = window.maxPage > 0 ? (window.currentPage / window.maxPage) : 0;
         window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SCROLL', pct: Math.min(1, Math.max(0, pct)) }));
         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: actionName || 'UPDATE', sw: 0, iw: iw, maxPage: window.maxPage, currentPage: window.currentPage }));
@@ -314,6 +338,7 @@ export default function ReaderScreenV2() {
       var lastScrollMsgTime = 0;
       window.addEventListener('scroll', function() {
         if (window.isPaged) return;
+        if (document.body.contentEditable === 'true') return; // Edit modunda scrollPct'yi sabitle
         var pct = window.scrollY / Math.max(1, document.body.scrollHeight - window.innerHeight);
         var atBottom = (window.innerHeight + Math.ceil(window.scrollY)) >= document.body.offsetHeight - 80;
         var atTop = window.scrollY <= 10;
@@ -327,6 +352,31 @@ export default function ReaderScreenV2() {
         if (now - lastScrollMsgTime > 150 || atBottom || atTop) {
            window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SCROLL', pct: Math.min(1, Math.max(0, pct)) }));
            lastScrollMsgTime = now;
+        }
+      });
+
+      var resizeTimeout;
+      var lastWidth = window.innerWidth;
+      var lastHeight = window.innerHeight;
+      window.addEventListener('resize', function() {
+        if (window.innerWidth === lastWidth && window.innerHeight === lastHeight) return;
+        lastWidth = window.innerWidth;
+        lastHeight = window.innerHeight;
+
+        if (window.isPaged && window.__webViewReady) {
+          clearTimeout(resizeTimeout);
+          resizeTimeout = setTimeout(function() {
+            var cursorAbsoluteX = null;
+            if (document.body.contentEditable === "true") {
+              var sel = window.getSelection();
+              if (sel && sel.rangeCount > 0) {
+                var rect = sel.getRangeAt(0).getBoundingClientRect();
+                var bodyRect = document.body.getBoundingClientRect();
+                cursorAbsoluteX = rect.left - bodyRect.left;
+              }
+            }
+            window.updatePagedProgress('RESIZE', cursorAbsoluteX);
+          }, 200);
         }
       });
 
@@ -536,6 +586,74 @@ export default function ReaderScreenV2() {
     }
   }, [themeState.readerMode, isWebViewReady]);
 
+  useEffect(() => {
+    if (isWebViewReady) {
+      webViewRef.current?.injectJavaScript(`
+        document.body.contentEditable = "${isEditMode ? 'true' : 'false'}";
+        document.body.style.outline="${isEditMode ? '2px dashed #F59E0B' : 'none'}";
+        if(${isEditMode}) {
+          if (!window.__kbScrollSetup) {
+            window.__kbScrollSetup = true;
+            document.addEventListener('selectionchange', function() {
+              var sel = window.getSelection();
+              if (!sel || sel.rangeCount === 0) return;
+              var range = sel.getRangeAt(0);
+              var rect = range.getBoundingClientRect();
+              var viewH = window.innerHeight;
+              if (rect.bottom > viewH * 0.7 || rect.top < viewH * 0.3) {
+                window.scrollBy({ top: rect.top - viewH * 0.5, behavior: 'smooth' });
+              }
+            });
+            document.addEventListener('focusin', function(e) {
+              setTimeout(function() {
+                var sel = window.getSelection();
+                if (sel && sel.rangeCount > 0) {
+                  var rect = sel.getRangeAt(0).getBoundingClientRect();
+                  var viewH = window.innerHeight;
+                  window.scrollBy({ top: rect.top - viewH * 0.5, behavior: 'smooth' });
+                }
+              }, 100);
+            });
+          }
+        } else {
+          window.__kbScrollSetup = false;
+          window.getSelection().removeAllRanges();
+          if (!window.isPaged) {
+            var restoreY = ${scrollPct} * Math.max(1, document.body.scrollHeight - window.innerHeight);
+            window.scrollTo({ top: restoreY, behavior: 'instant' });
+          }
+        }
+        true;
+      `);
+    }
+  }, [isEditMode, isWebViewReady]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      NavigationBar.setBackgroundColorAsync(bgPreset.bg);
+      NavigationBar.setButtonStyleAsync(themeState.isDarkMode ? 'light' : 'dark');
+    }
+  }, [bgPreset.bg, themeState.isDarkMode]);
+
+  useEffect(() => {
+    if (!isEditMode) return;
+    const backAction = () => {
+      setIsEditMode(false);
+      return true; // prevent default back
+    };
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [isEditMode]);
+
 
   // ── Render ──
   return (
@@ -646,14 +764,18 @@ export default function ReaderScreenV2() {
         }}
       />
 
-      <ReaderStatusOverlay show={themeState.showClockAndBattery} theme={themeState.theme} insets={insets} bgPreset={bgPreset} />
+      {!isKeyboardVisible && <ReaderStatusOverlay show={themeState.showClockAndBattery} theme={themeState.theme} insets={insets} bgPreset={bgPreset} />}
 
-      {isEditMode && (
-        <View style={{ position: 'absolute', bottom: Math.max(insets.bottom, 16) + 8, left: 16, right: 16, backgroundColor: themeState.theme.surface, padding: 16, borderRadius: 12, elevation: 5 }}>
-          <Text style={{ marginBottom: 12, fontWeight: 'bold' }}>Düzenleme Modu</Text>
+      {isEditMode && !isKeyboardVisible && (
+        <View style={{ position: 'absolute', bottom: Math.max(insets.bottom, 16) + 8, left: 16, right: 16, backgroundColor: themeState.theme.surface, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: themeState.theme.border, elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.1, shadowRadius: 4 }}>
+          <Text style={{ marginBottom: 12, fontWeight: 'bold', color: themeState.theme.textPrimary }}>Düzenleme Modu</Text>
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12 }}>
-            <TouchableOpacity onPress={() => setIsEditMode(false)}><Text style={{ color: themeState.theme.danger, padding: 8 }}>İptal</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => { saveEdits(scrollPct); setIsEditMode(false); }}><Text style={{ color: themeState.theme.primary, padding: 8, fontWeight: 'bold' }}>Kaydet</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setIsEditMode(false)} style={{ borderWidth: 1, borderColor: themeState.theme.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16 }}>
+              <Text style={{ color: themeState.theme.danger }}>İptal</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { saveEdits(scrollPct); setIsEditMode(false); }} style={{ borderWidth: 1, borderColor: themeState.theme.primary, backgroundColor: themeState.theme.primary + '15', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16 }}>
+              <Text style={{ color: themeState.theme.primary, fontWeight: 'bold' }}>Kaydet</Text>
+            </TouchableOpacity>
           </View>
         </View>
       )}
