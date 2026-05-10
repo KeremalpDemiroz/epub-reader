@@ -13,6 +13,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { useReaderState } from './hooks/useReaderState';
 import { useWebViewBridge } from './hooks/useWebViewBridge';
 import { useReaderGestures } from './hooks/useReaderGestures';
+import { useTimelineStore } from '../../store/useTimelineStore';
 
 import { ReaderHeader } from './components/ReaderHeader';
 import { ReaderDock } from './components/ReaderDock';
@@ -57,6 +58,7 @@ export default function ReaderScreenV2() {
   const isDrawerOpenRef = useRef(false);
   const [scrollPct, setScrollPct] = useState(0);
   const [isWebViewReady, setIsWebViewReady] = useState(true);
+  const [baseHtml, setBaseHtml] = useState<string | null>(null);
 
   // ── Refs ──
   const isNavigatingBack = useRef(false);
@@ -173,7 +175,10 @@ export default function ReaderScreenV2() {
 
   useEffect(() => {
     if (!targetBookId || !targetChapterId) return;
-    if (timelineState.activeBookId === targetBookId && timelineState.activeChapterId === targetChapterId && timelineState.currentText) return;
+    if (timelineState.activeBookId === targetBookId && timelineState.activeChapterId === targetChapterId && timelineState.currentText) {
+      if (!baseHtml) setBaseHtml(timelineState.currentText);
+      return;
+    }
     if (!book?.chapters) return;
     
     const chapter = book.chapters.find(c => c.id === targetChapterId) || book.chapters[0];
@@ -225,6 +230,11 @@ export default function ReaderScreenV2() {
 
         timelineState.setActiveChapter(targetBookId, chapter.id, htmlStr);
         libraryState.updateCurrentChapter(targetBookId, chapter.id);
+        
+        // Sadece bölüm ilk yüklendiğinde WebView'ı native olarak besle. 
+        // Böylece versiyon geçişlerinde WebView native olarak reload (beyaz flash) atmaz.
+        setBaseHtml(useTimelineStore.getState().currentText);
+        
         setIsLoading(false);
         const savedPct = book?.currentScrollPct || 0;
         setScrollPct(savedPct);
@@ -486,6 +496,8 @@ export default function ReaderScreenV2() {
           }, 50);
 
           window.__isInitialized = true;
+          window.__webViewReady = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DEBUG_PAGE', action: 'INIT_SCRIPT', sw: sw, iw: iw, maxPage: window.maxPage, currentPage: window.currentPage }));
         }, 100);
       } else {
@@ -495,11 +507,11 @@ export default function ReaderScreenV2() {
           } else if (${scrollPct} > 0.01) {
             window.scrollTo(0, ${scrollPct} * Math.max(1, document.body.scrollHeight - window.innerHeight));
           }
+          window.__isInitialized = true;
+          window.__webViewReady = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
         }, 100);
-        window.__isInitialized = true;
       }
-
-      window.__webViewReady = false;
 
       document.body.style.webkitUserSelect = "none";
       document.body.style.userSelect = "none";
@@ -724,11 +736,11 @@ export default function ReaderScreenV2() {
       />
 
       <View style={{ flex: 1 }} {...panResponder.panHandlers}>
-        {timelineState.currentText ? (
+        {baseHtml ? (
           <WebView
             ref={webViewRef}
             originWhitelist={['*', 'file://*']}
-            source={{ html: timelineState.currentText, baseUrl: currentChapter?.chapterBaseDir || book?.baseDir }}
+            source={{ html: baseHtml, baseUrl: currentChapter?.chapterBaseDir || book?.baseDir }}
             style={{ flex: 1, backgroundColor: bgPreset.bg, opacity: isWebViewReady ? 1 : 0 }}
             injectedJavaScript={initScript}
             onMessage={handleMsg}
@@ -743,13 +755,8 @@ export default function ReaderScreenV2() {
             onLoadEnd={() => {
               isNavigatingBack.current = false;
               pendingScrollRestore.current = null;
-              webViewRef.current?.injectJavaScript(`
-                setTimeout(function() {
-                  window.__webViewReady = true;
-                  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'READY' }));
-                }, 100);
-                true;
-              `);
+              // We rely on the initScript to post the READY message
+              // once it has successfully calculated and applied the correct scroll/pagination state.
             }}
           />
         ) : (
@@ -807,7 +814,50 @@ export default function ReaderScreenV2() {
         updateCurrentChapter={libraryState.updateCurrentChapter}
         loadVersion={(id) => {
           const html = timelineState.viewVersion ? timelineState.viewVersion(id) : timelineState.reconstructVersion(id);
-          webViewRef.current?.injectJavaScript(`document.body.innerHTML=\`${html.replace(/`/g,'\\\\`')}\`; true;`);
+          const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+          const bodyContent = bodyMatch ? bodyMatch[1] : html;
+          
+          const script = `
+            (function() {
+              // 1. Hide the body and remove transform transition
+              document.body.style.transition = 'opacity 0.15s ease-out';
+              document.body.style.opacity = '0';
+              
+              setTimeout(function() {
+                // 2. Replace the HTML safely
+                document.body.style.transition = 'none';
+                document.body.innerHTML = ${JSON.stringify(bodyContent)};
+                
+                // 3. Recalculate dimensions and pagination boundaries
+                if (window.isPaged) {
+                  var sw = document.documentElement.scrollWidth || document.body.scrollWidth;
+                  var iw = window.innerWidth;
+                  window.maxPage = Math.max(0, Math.round(sw / iw) - 1);
+                  window.currentPage = Math.min(window.currentPage || 0, window.maxPage);
+                  document.body.style.transform = 'translateX(-' + (window.currentPage * iw) + 'px)';
+                  
+                  // Notify RN about the new pagination state
+                  window.ReactNativeWebView.postMessage(JSON.stringify({ 
+                    type: 'DEBUG_PAGE', action: 'VERSION_LOADED', sw: sw, iw: iw, maxPage: window.maxPage, currentPage: window.currentPage 
+                  }));
+                } else {
+                  var maxScroll = Math.max(0, document.body.scrollHeight - window.innerHeight);
+                  if (window.scrollY > maxScroll) {
+                    window.scrollTo(0, maxScroll);
+                  }
+                }
+                
+                // 4. Fade back in smoothly and restore transform transition
+                setTimeout(function() {
+                  document.body.style.transition = 'opacity 0.2s ease-in, transform 0.25s ease-out';
+                  document.body.style.opacity = '1';
+                }, 50);
+                
+              }, 150); // wait 150ms for the fade-out to finish
+            })();
+            true;
+          `;
+          webViewRef.current?.injectJavaScript(script);
         }}
       />
       </KeyboardAvoidingView>
