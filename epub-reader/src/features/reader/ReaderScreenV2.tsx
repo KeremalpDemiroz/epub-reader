@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'; // force-recompile-1
 import {
   StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Animated, Platform,
   KeyboardAvoidingView, DeviceEventEmitter, Keyboard, BackHandler
@@ -142,7 +142,7 @@ export default function ReaderScreenV2() {
 
   // ── Hooks ──
   const { panResponder, drawerPanResponder } = useReaderGestures({
-    width, DRAWER_WIDTH, isDrawerOpenRef, setIsDrawerOpen, slideAnim
+    width, DRAWER_WIDTH, isDrawerOpenRef, setIsDrawerOpen, slideAnim, isEditMode
   });
 
   const { handleMsg, saveEdits, handleVolumeKey } = useWebViewBridge({
@@ -316,10 +316,17 @@ export default function ReaderScreenV2() {
 
       function updatePagedProgress(actionName, cursorAbsoluteX) {
         var iw = window.innerWidth;
+        var oldTransition = document.body.style.transition;
+        document.body.style.transition = 'none';
         var oldTransform = document.body.style.transform;
         document.body.style.transform = 'none';
+        
         var sw = document.documentElement.scrollWidth || document.body.scrollWidth;
+        
         document.body.style.transform = oldTransform;
+        void document.body.offsetHeight; // Zorunlu reflow
+        document.body.style.transition = oldTransition;
+        
         window.maxPage = Math.max(0, Math.round(sw / iw) - 1);
         
         if (cursorAbsoluteX !== null && cursorAbsoluteX !== undefined && !isNaN(cursorAbsoluteX)) {
@@ -445,7 +452,7 @@ export default function ReaderScreenV2() {
       };
 
       document.addEventListener('touchend', function(e) {
-        if(!window.isPaged || document.body.contentEditable === "true" || window.getSelection().toString() !== "" || !window.__webViewReady || !window.__isInitialized || window.__isNavigating) return;
+        if(window.isDrawerOpen || !window.isPaged || document.body.contentEditable === "true" || window.getSelection().toString() !== "" || !window.__webViewReady || !window.__isInitialized || window.__isNavigating) return;
         var dx = e.changedTouches[0].clientX - startX;
         var dy = e.changedTouches[0].clientY - startY;
 
@@ -505,7 +512,7 @@ export default function ReaderScreenV2() {
       });
 
       document.addEventListener('click', function(e) {
-        if(document.body.contentEditable==="true") return;
+        if(window.isDrawerOpen || document.body.contentEditable==="true") return;
         if (window.isPaged) {
           var ratio = e.clientX / window.innerWidth;
           var zone = ratio < 0.25 ? 'left' : ratio > 0.75 ? 'right' : 'mid';
@@ -527,12 +534,14 @@ export default function ReaderScreenV2() {
     `);
   }, [themeState.fontSize, themeState.lineHeight, bgPreset]);
 
+  const effectiveMode = isEditMode ? 'scroll' : themeState.readerMode;
+
   useEffect(() => {
     const pct = scrollPct;
     webViewRef.current?.injectJavaScript(`
       try {
         var savedPct = ${pct};
-        window.isPaged = ${themeState.readerMode === 'paged'};
+        window.isPaged = ${effectiveMode === 'paged'};
         if (window.isPaged) {
           document.documentElement.style.overflow = 'hidden';
           document.body.style.transition = 'none';
@@ -573,24 +582,40 @@ export default function ReaderScreenV2() {
       } catch(e) {}
       true;
     `);
-  }, [themeState.readerMode, width, insets.top, themeState.scrollBuffer]);
+  }, [effectiveMode, width, insets.top, themeState.scrollBuffer]);
 
   useEffect(() => {
     if (isWebViewReady) {
       webViewRef.current?.injectJavaScript(`
         (function(){
-          window.isPaged = ${themeState.readerMode === 'paged'};
+          window.isPaged = ${effectiveMode === 'paged'};
           console.log('[WebView][Mode] Updated to: ' + (window.isPaged ? 'paged' : 'scroll'));
         })(); true;
       `);
     }
-  }, [themeState.readerMode, isWebViewReady]);
+  }, [effectiveMode, isWebViewReady]);
+
+  useEffect(() => {
+    if (isWebViewReady) {
+      const padding = isEditMode && !isKeyboardVisible && Platform.OS === 'android' ? Math.max(insets.bottom, 16) : 16;
+      webViewRef.current?.injectJavaScript(`
+        if (window.isPaged) {
+          document.body.style.paddingBottom = '${padding}px';
+          if (window.updatePagedProgress) window.updatePagedProgress('RESIZE', null);
+        }
+        true;
+      `);
+    }
+  }, [isEditMode, isKeyboardVisible, insets.bottom, isWebViewReady]);
 
   useEffect(() => {
     if (isWebViewReady) {
       webViewRef.current?.injectJavaScript(`
         document.body.contentEditable = "${isEditMode ? 'true' : 'false'}";
         document.body.style.outline="${isEditMode ? '2px dashed #F59E0B' : 'none'}";
+        document.body.style.userSelect = "${isEditMode ? 'auto' : 'none'}";
+        document.body.style.webkitUserSelect = "${isEditMode ? 'auto' : 'none'}";
+
         if(${isEditMode}) {
           if (!window.__kbScrollSetup) {
             window.__kbScrollSetup = true;
@@ -644,9 +669,17 @@ export default function ReaderScreenV2() {
     }
   }, [bgPreset.bg, themeState.isDarkMode]);
 
+  const isKeyboardVisibleRef = useRef(isKeyboardVisible);
+  useEffect(() => {
+    isKeyboardVisibleRef.current = isKeyboardVisible;
+  }, [isKeyboardVisible]);
+
   useEffect(() => {
     if (!isEditMode) return;
     const backAction = () => {
+      if (isKeyboardVisibleRef.current) {
+        return false; // let system close keyboard
+      }
       setIsEditMode(false);
       return true; // prevent default back
     };
@@ -654,14 +687,27 @@ export default function ReaderScreenV2() {
     return () => backHandler.remove();
   }, [isEditMode]);
 
+  useEffect(() => {
+    if (!isEditMode && !isNavMode && Platform.OS === 'android') {
+      NavigationBar.setBehaviorAsync('overlay-swipe');
+      NavigationBar.setVisibilityAsync('hidden');
+    }
+  }, [isEditMode, isNavMode]);
+
+  useEffect(() => {
+    if (isWebViewReady) {
+      webViewRef.current?.injectJavaScript(`window.isDrawerOpen = ${isDrawerOpen}; true;`);
+    }
+  }, [isDrawerOpen, isWebViewReady]);
 
   // ── Render ──
   return (
-    <KeyboardAvoidingView 
-      style={{ flex: 1, backgroundColor: bgPreset.bg }} 
-      behavior={Platform.OS === 'ios' ? 'padding' : isEditMode ? 'height' : undefined}
-      keyboardVerticalOffset={0}
-    >
+    <View style={{ flex: 1, backgroundColor: bgPreset.bg }}>
+      <KeyboardAvoidingView 
+        style={{ flex: 1 }} 
+        behavior={Platform.OS === 'ios' ? 'padding' : isEditMode ? 'height' : undefined}
+        keyboardVerticalOffset={0}
+      >
       <StatusBar hidden={true} translucent={true} style={themeState.isDarkMode ? 'light' : 'dark'} />
 
       <ReaderHeader
@@ -756,21 +802,29 @@ export default function ReaderScreenV2() {
         targetBookId={targetBookId}
         isEditMode={isEditMode}
         versions={versions}
+        viewedVersionId={timelineState.viewedVersionId}
         closeDrawer={closeDrawer}
         updateCurrentChapter={libraryState.updateCurrentChapter}
         loadVersion={(id) => {
-          const html = timelineState.reconstructVersion(id);
+          const html = timelineState.viewVersion ? timelineState.viewVersion(id) : timelineState.reconstructVersion(id);
           webViewRef.current?.injectJavaScript(`document.body.innerHTML=\`${html.replace(/`/g,'\\\\`')}\`; true;`);
         }}
       />
+      </KeyboardAvoidingView>
 
-      {!isKeyboardVisible && <ReaderStatusOverlay show={themeState.showClockAndBattery} theme={themeState.theme} insets={insets} bgPreset={bgPreset} />}
+      <ReaderStatusOverlay show={themeState.showClockAndBattery} theme={themeState.theme} insets={insets} bgPreset={bgPreset} bottomOffset={isEditMode ? Math.max(insets.bottom, 16) : undefined} opacity={isKeyboardVisible ? 0 : 1} pointerEvents={isKeyboardVisible ? 'none' : 'auto'} />
 
-      {isEditMode && !isKeyboardVisible && (
-        <View style={{ position: 'absolute', bottom: Math.max(insets.bottom, 16) + 8, left: 16, right: 16, backgroundColor: themeState.theme.surface, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: themeState.theme.border, elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.1, shadowRadius: 4 }}>
+      {isEditMode && (
+        <View pointerEvents={isKeyboardVisible ? 'none' : 'auto'} style={{ position: 'absolute', bottom: Math.max(insets.bottom, 16) + 32, left: 16, right: 16, backgroundColor: themeState.theme.surface, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: themeState.theme.border, elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.1, shadowRadius: 4, opacity: isKeyboardVisible ? 0 : 1 }}>
           <Text style={{ marginBottom: 12, fontWeight: 'bold', color: themeState.theme.textPrimary }}>Düzenleme Modu</Text>
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12 }}>
-            <TouchableOpacity onPress={() => setIsEditMode(false)} style={{ borderWidth: 1, borderColor: themeState.theme.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16 }}>
+            <TouchableOpacity onPress={() => {
+              const html = timelineState.currentText;
+              if (html) {
+                webViewRef.current?.injectJavaScript(`document.body.innerHTML=\`${html.replace(/`/g,'\\\\`')}\`; true;`);
+              }
+              setIsEditMode(false);
+            }} style={{ borderWidth: 1, borderColor: themeState.theme.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16 }}>
               <Text style={{ color: themeState.theme.danger }}>İptal</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => { saveEdits(scrollPct); setIsEditMode(false); }} style={{ borderWidth: 1, borderColor: themeState.theme.primary, backgroundColor: themeState.theme.primary + '15', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16 }}>
@@ -779,6 +833,6 @@ export default function ReaderScreenV2() {
           </View>
         </View>
       )}
-    </KeyboardAvoidingView>
+    </View>
   );
 }

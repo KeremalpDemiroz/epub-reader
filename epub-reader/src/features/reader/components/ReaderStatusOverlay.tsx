@@ -7,9 +7,12 @@ interface ReaderStatusOverlayProps {
   theme: any;
   insets: { top: number; bottom: number; left: number; right: number };
   bgPreset?: { bg: string; fg: string; label: string };
+  bottomOffset?: number;
+  opacity?: number;
+  pointerEvents?: 'box-none' | 'none' | 'box-only' | 'auto';
 }
 
-export const ReaderStatusOverlay: React.FC<ReaderStatusOverlayProps> = React.memo(({ show, theme, insets, bgPreset }) => {
+export const ReaderStatusOverlay: React.FC<ReaderStatusOverlayProps> = React.memo(({ show, theme, insets, bgPreset, bottomOffset, opacity = 1, pointerEvents = 'none' }) => {
   const [time, setTime] = useState(new Date());
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
 
@@ -43,11 +46,13 @@ export const ReaderStatusOverlay: React.FC<ReaderStatusOverlayProps> = React.mem
     <View style={[
       styles.container, 
       { 
-        paddingBottom: Math.max(insets.bottom, 8), 
-        paddingTop: 8,
-        backgroundColor: bgPreset?.bg || 'transparent'
+        bottom: bottomOffset !== undefined ? bottomOffset : insets.bottom,
+        paddingBottom: 6, 
+        paddingTop: 6,
+        backgroundColor: bgPreset?.bg || 'transparent',
+        opacity
       }
-    ]} pointerEvents="none">
+    ]} pointerEvents={pointerEvents}>
       <Text style={[styles.text, { color: theme.textMuted }]}>
         {time.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
       </Text>

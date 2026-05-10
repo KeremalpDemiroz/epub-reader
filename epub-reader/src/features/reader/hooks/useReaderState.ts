@@ -46,6 +46,8 @@ export const useReaderState = () => {
     versionsByNode: state.versionsByNode,
     addVersion: state.addVersion,
     reconstructVersion: state.reconstructVersion,
+    viewVersion: state.viewVersion,
+    viewedVersionId: state.viewedVersionId,
     setActiveChapter: state.setActiveChapter,
   })));
 

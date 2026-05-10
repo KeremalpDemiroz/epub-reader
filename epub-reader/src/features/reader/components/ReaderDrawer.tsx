@@ -14,6 +14,7 @@ interface ReaderDrawerProps {
   targetBookId?: string;
   isEditMode: boolean;
   versions: any[];
+  viewedVersionId?: string | null;
   closeDrawer: () => void;
   updateCurrentChapter: (bookId: string, chapterId: string) => void;
   loadVersion: (versionId: string) => void;
@@ -30,6 +31,7 @@ export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
   targetBookId,
   isEditMode,
   versions,
+  viewedVersionId,
   closeDrawer,
   updateCurrentChapter,
   loadVersion,
@@ -137,31 +139,37 @@ export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
         {/* Zaman Akışı */}
         <View style={{ flex: 1, display: drawerTab === 'timeline' ? 'flex' : 'none' }}>
           <FlatList
-            data={versions}
+            data={[{ id: 'original', name: 'Orijinal Metin', timestamp: 0, type: 'base' }, ...versions]}
             keyExtractor={item => item.id}
             renderItem={({ item, index }) => {
-              const date = new Date(item.timestamp);
+              const date = item.timestamp > 0 ? new Date(item.timestamp) : null;
+              
+              // Determine if this item is currently being viewed
+              // If viewedVersionId is null, it means we are viewing the latest version (the last item in the array)
+              const isLatest = index === versions.length; // versions length because we prepended 'original'
+              const isActive = viewedVersionId ? viewedVersionId === item.id : isLatest;
+              
               return (
-                <View style={[styles.timelineRow, { borderBottomColor: theme.border }]}>
+                <View style={[styles.timelineRow, { borderBottomColor: theme.border }, isActive && { backgroundColor: theme.primary + '10' }]}>
                   <View style={styles.timelineInfo}>
-                    <Text style={[styles.timelineDate, { color: theme.textPrimary }]}>
-                      {date.toLocaleDateString()} {date.toLocaleTimeString()}
-                    </Text>
+                    {date && (
+                      <Text style={[styles.timelineDate, { color: theme.textPrimary }]}>
+                        {date.toLocaleDateString()} {date.toLocaleTimeString()}
+                      </Text>
+                    )}
                     <Text style={[styles.timelineDesc, { color: theme.textSecondary }]}>
-                      {item.type === 'base' ? 'Orijinal Metin' : 'Düzenleme'} {index === versions.length - 1 && '(Aktif)'}
+                      {item.type === 'base' ? 'Orijinal Metin' : item.name || 'Düzenleme'} {isActive && '(Görüntüleniyor)'}
                     </Text>
                   </View>
-                  {index !== versions.length - 1 && (
+                  {!isActive && (
                     <TouchableOpacity
                       style={[styles.smBtn, { backgroundColor: theme.primaryLight }]}
                       onPress={() => {
-                        Alert.alert('Sürümü Yükle', 'Bu sürüme dönmek istiyor musunuz? Sonraki tüm değişiklikler silinecek.', [
-                          { text: 'İptal', style: 'cancel' },
-                          { text: 'Dön', style: 'destructive', onPress: () => { loadVersion(item.id); closeDrawer(); } }
-                        ]);
+                        loadVersion(item.id); 
+                        closeDrawer();
                       }}
                     >
-                      <Text style={[styles.smBtnText, { color: theme.primary }]}>Dön</Text>
+                      <Text style={[styles.smBtnText, { color: theme.primary }]}>Görüntüle</Text>
                     </TouchableOpacity>
                   )}
                 </View>

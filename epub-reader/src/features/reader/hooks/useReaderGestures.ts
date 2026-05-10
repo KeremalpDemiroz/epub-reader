@@ -7,6 +7,7 @@ interface UseReaderGesturesProps {
   isDrawerOpenRef: React.MutableRefObject<boolean>;
   setIsDrawerOpen: (val: boolean) => void;
   slideAnim: Animated.Value;
+  isEditMode: boolean;
 }
 
 export const useReaderGestures = ({
@@ -15,6 +16,7 @@ export const useReaderGestures = ({
   isDrawerOpenRef,
   setIsDrawerOpen,
   slideAnim,
+  isEditMode,
 }: UseReaderGesturesProps) => {
   const openGestureOffset = useRef(DRAWER_WIDTH);
   const closeGestureOffset = useRef(0);
@@ -27,6 +29,7 @@ export const useReaderGestures = ({
   const panResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (evt, g) => {
+      if (isEditMode) return false;
       if (isDrawerOpenRef.current) return false;
       return evt.nativeEvent.pageX > width * 0.85
         && g.dx < -6
@@ -50,7 +53,7 @@ export const useReaderGestures = ({
           .start(() => setDrawerOpen(false));
       }
     },
-  }), [width, DRAWER_WIDTH, slideAnim, setIsDrawerOpen]);
+  }), [width, DRAWER_WIDTH, slideAnim, setIsDrawerOpen, isEditMode]);
 
   const drawerPanResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
