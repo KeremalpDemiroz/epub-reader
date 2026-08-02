@@ -1,12 +1,14 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, FlatList, Animated, Alert, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, Alert, StyleSheet } from 'react-native';
+import Animated, { SharedValue, useAnimatedStyle, interpolate } from 'react-native-reanimated';
+import { GestureDetector } from 'react-native-gesture-handler';
 
 export type DrawerTab = 'chapters' | 'timeline';
 
 interface ReaderDrawerProps {
   isDrawerOpen: boolean;
-  slideAnim: Animated.Value;
-  drawerPanResponder: any;
+  slideAnim: SharedValue<number>;
+  drawerPanGesture: any;
   DRAWER_WIDTH: number;
   theme: any;
   book: any;
@@ -23,7 +25,7 @@ interface ReaderDrawerProps {
 export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
   isDrawerOpen,
   slideAnim,
-  drawerPanResponder,
+  drawerPanGesture,
   DRAWER_WIDTH,
   theme,
   book,
@@ -50,6 +52,18 @@ export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
     }
   }, [targetChapterId, book?.chapters]);
 
+  const overlayStyle = useAnimatedStyle(() => {
+    return {
+      opacity: interpolate(slideAnim.value, [0, DRAWER_WIDTH], [1, 0])
+    };
+  });
+
+  const drawerStyle = useAnimatedStyle(() => {
+    return {
+      transform: [{ translateX: slideAnim.value }]
+    };
+  });
+
   return (
     <>
       {/* ── OVERLAY (drawer) ── */}
@@ -57,7 +71,7 @@ export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
         <Animated.View 
           style={[
             styles.overlay, 
-            { opacity: slideAnim.interpolate({ inputRange: [0, DRAWER_WIDTH], outputRange: [1, 0] }) }
+            overlayStyle
           ]}
         >
           <TouchableOpacity activeOpacity={1} style={{ flex: 1 }} onPress={closeDrawer} />
@@ -65,14 +79,13 @@ export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
       )}
 
       {/* ── SAĞ ÇEKMECE ── */}
-      <Animated.View 
-        style={[styles.drawer, { 
-          width: DRAWER_WIDTH, 
-          transform: [{ translateX: slideAnim }],
-          backgroundColor: theme.background 
-        }]} 
-        {...drawerPanResponder.panHandlers}
-      >
+      <GestureDetector gesture={drawerPanGesture}>
+        <Animated.View 
+          style={[styles.drawer, { 
+            width: DRAWER_WIDTH, 
+            backgroundColor: theme.background 
+          }, drawerStyle]} 
+        >
         {/* Çekmece üstü */}
         <View style={[styles.drawerHeader, { borderBottomColor: theme.border }]}>
           <Text style={[styles.drawerBookTitle, { color: theme.primary }]} numberOfLines={1}>
@@ -178,7 +191,8 @@ export const ReaderDrawer: React.FC<ReaderDrawerProps> = React.memo(({
             ListEmptyComponent={<Text style={[styles.emptyTab, { color: theme.textMuted }]}>Henüz değişiklik yapılmadı.</Text>}
           />
         </View>
-      </Animated.View>
+        </Animated.View>
+      </GestureDetector>
     </>
   );
 });

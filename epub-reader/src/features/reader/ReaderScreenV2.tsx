@@ -1,8 +1,10 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'; // force-recompile-1
 import {
-  StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Animated, Platform,
+  StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Platform,
   KeyboardAvoidingView, DeviceEventEmitter, Keyboard, BackHandler
 } from 'react-native';
+import { GestureDetector } from 'react-native-gesture-handler';
+import { useSharedValue, withTiming, runOnJS } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
 import * as NavigationBar from 'expo-navigation-bar';
@@ -67,9 +69,9 @@ export default function ReaderScreenV2() {
   useEffect(() => { isNavModeRef.current = isNavMode; }, [isNavMode]);
 
   // ── Animasyonlar ──
-  const headerAnim = useRef(new Animated.Value(0)).current;
-  const dockAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(DRAWER_WIDTH)).current;
+  const headerAnim = useSharedValue(0);
+  const dockAnim = useSharedValue(0);
+  const slideAnim = useSharedValue(DRAWER_WIDTH);
   const navBarHeight = useRef(insets.bottom).current;
 
   // ── Data ──
@@ -87,20 +89,18 @@ export default function ReaderScreenV2() {
   const showNav = useCallback(() => {
     setIsNavMode(true);
     if (Platform.OS === 'android') NavigationBar.setVisibilityAsync('visible');
-    Animated.parallel([
-      Animated.timing(headerAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-      Animated.timing(dockAnim,   { toValue: 1, duration: 200, useNativeDriver: true }),
-    ]).start();
+    headerAnim.value = withTiming(1, { duration: 200 });
+    dockAnim.value = withTiming(1, { duration: 200 });
   }, [headerAnim, dockAnim]);
 
   const hideNav = useCallback(() => {
     if (Platform.OS === 'android') NavigationBar.setVisibilityAsync('hidden');
-    Animated.parallel([
-      Animated.timing(headerAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
-      Animated.timing(dockAnim,   { toValue: 0, duration: 200, useNativeDriver: true }),
-    ]).start(() => {
-      setIsNavMode(false);
-      setDockMode('nav');
+    headerAnim.value = withTiming(0, { duration: 200 });
+    dockAnim.value = withTiming(0, { duration: 200 }, (finished) => {
+      if (finished) {
+        runOnJS(setIsNavMode)(false);
+        runOnJS(setDockMode)('nav');
+      }
     });
   }, [headerAnim, dockAnim]);
 
@@ -119,21 +119,21 @@ export default function ReaderScreenV2() {
 
   const openDrawer = useCallback(() => {
     if (isNavMode) hideNav();
-    slideAnim.stopAnimation();
-    slideAnim.setValue(DRAWER_WIDTH);
+    slideAnim.value = DRAWER_WIDTH;
     isDrawerOpenRef.current = true;
     setIsDrawerOpen(true);
     requestAnimationFrame(() => {
-      Animated.timing(slideAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start();
+      slideAnim.value = withTiming(0, { duration: 250 });
     });
   }, [isNavMode, hideNav, slideAnim, DRAWER_WIDTH]);
 
   const closeDrawer = useCallback(() => {
-    Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 200, useNativeDriver: true })
-      .start(() => {
+    slideAnim.value = withTiming(DRAWER_WIDTH, { duration: 200 }, (finished) => {
+      if (finished) {
         isDrawerOpenRef.current = false;
-        setIsDrawerOpen(false);
-      });
+        runOnJS(setIsDrawerOpen)(false);
+      }
+    });
   }, [slideAnim, DRAWER_WIDTH]);
 
   const goChapter = useCallback((dir: 1 | -1) => {
@@ -143,7 +143,7 @@ export default function ReaderScreenV2() {
   }, [book, chapterIdx, libraryState, targetBookId]);
 
   // ── Hooks ──
-  const { panResponder, drawerPanResponder } = useReaderGestures({
+  const { panGesture, drawerPanGesture, setDrawerOpen } = useReaderGestures({
     width, DRAWER_WIDTH, isDrawerOpenRef, setIsDrawerOpen, slideAnim, isEditMode
   });
 
@@ -735,42 +735,44 @@ export default function ReaderScreenV2() {
         navigation={navigation}
       />
 
-      <View style={{ flex: 1 }} {...panResponder.panHandlers}>
-        {baseHtml ? (
-          <WebView
-            ref={webViewRef}
-            originWhitelist={['*', 'file://*']}
-            source={{ html: baseHtml, baseUrl: currentChapter?.chapterBaseDir || book?.baseDir }}
-            style={{ flex: 1, backgroundColor: bgPreset.bg, opacity: isWebViewReady ? 1 : 0 }}
-            injectedJavaScript={initScript}
-            onMessage={handleMsg}
-            bounces={false}
-            scrollEnabled={true}
-            keyboardDisplayRequiresUserAction={false}
-            scalesPageToFit={false}
-            allowFileAccessFromFileURLs={true}
-            allowUniversalAccessFromFileURLs={true}
-            mixedContentMode="always"
-            onShouldStartLoadWithRequest={() => true}
-            onLoadEnd={() => {
-              isNavigatingBack.current = false;
-              pendingScrollRestore.current = null;
-              // We rely on the initScript to post the READY message
-              // once it has successfully calculated and applied the correct scroll/pagination state.
-            }}
-          />
-        ) : (
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-            <Text style={{ color: themeState.theme.textMuted }}>📂 İçerik yok.</Text>
-          </View>
-        )}
+      <GestureDetector gesture={panGesture}>
+        <View style={{ flex: 1 }}>
+          {baseHtml ? (
+            <WebView
+              ref={webViewRef}
+              originWhitelist={['*', 'file://*']}
+              source={{ html: baseHtml, baseUrl: currentChapter?.chapterBaseDir || book?.baseDir }}
+              style={{ flex: 1, backgroundColor: bgPreset.bg, opacity: isWebViewReady ? 1 : 0 }}
+              injectedJavaScript={initScript}
+              onMessage={handleMsg}
+              bounces={false}
+              scrollEnabled={true}
+              keyboardDisplayRequiresUserAction={false}
+              scalesPageToFit={false}
+              allowFileAccessFromFileURLs={true}
+              allowUniversalAccessFromFileURLs={true}
+              mixedContentMode="always"
+              onShouldStartLoadWithRequest={() => true}
+              onLoadEnd={() => {
+                isNavigatingBack.current = false;
+                pendingScrollRestore.current = null;
+                // We rely on the initScript to post the READY message
+                // once it has successfully calculated and applied the correct scroll/pagination state.
+              }}
+            />
+          ) : (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ color: themeState.theme.textMuted }}>📂 İçerik yok.</Text>
+            </View>
+          )}
 
-        {isLoading && (
-          <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', backgroundColor: bgPreset.bg, zIndex: 10 }]}>
-            <ActivityIndicator color={themeState.theme.primary} size="large" />
-          </View>
-        )}
-      </View>
+          {isLoading && (
+            <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center', backgroundColor: bgPreset.bg, zIndex: 10 }]}>
+              <ActivityIndicator color={themeState.theme.primary} size="large" />
+            </View>
+          )}
+        </View>
+      </GestureDetector>
 
       <ReaderDock
         isEditMode={isEditMode}
@@ -801,7 +803,7 @@ export default function ReaderScreenV2() {
       <ReaderDrawer
         isDrawerOpen={isDrawerOpen}
         slideAnim={slideAnim}
-        drawerPanResponder={drawerPanResponder}
+        drawerPanGesture={drawerPanGesture}
         DRAWER_WIDTH={DRAWER_WIDTH}
         theme={themeState.theme}
         book={book}

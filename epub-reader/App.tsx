@@ -6,6 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as NavigationBar from 'expo-navigation-bar';
 import { Platform, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import HomeScreen    from './src/screens/HomeScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
@@ -94,27 +95,29 @@ export default function App() {
   }, []);
 
   return (
-    <SafeAreaProvider>
-      <StatusBar 
-        style={isDarkMode ? 'light' : 'dark'} 
-        backgroundColor="transparent"
-        translucent={true}
-      />
-      <NavigationContainer>
-        <Root.Navigator screenOptions={{ headerShown: false }}>
-          {/* Kitaplık / Drawer ekranı */}
-          <Root.Screen name="DrawerRoot" component={DrawerNavigator} />
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <StatusBar 
+          style={isDarkMode ? 'light' : 'dark'} 
+          backgroundColor="transparent"
+          translucent={true}
+        />
+        <NavigationContainer>
+          <Root.Navigator screenOptions={{ headerShown: false }}>
+            {/* Kitaplık / Drawer ekranı */}
+            <Root.Screen name="DrawerRoot" component={DrawerNavigator} />
 
-          {/* Okuyucu — Drawer dışında, tam ekran */}
-          <Root.Screen name="Reader" component={ReaderScreen} />
+            {/* Okuyucu — Drawer dışında, tam ekran */}
+            <Root.Screen name="Reader" component={ReaderScreen} />
 
-          {/* Künye Ekranı */}
-          <Root.Screen name="BookInfo" component={BookInfoScreen} />
+            {/* Künye Ekranı */}
+            <Root.Screen name="BookInfo" component={BookInfoScreen} />
 
-          {/* Birleştirme Sıralama Ekranı */}
-          <Root.Screen name="MergeOrder" component={MergeOrderScreen} />
-        </Root.Navigator>
-      </NavigationContainer>
-    </SafeAreaProvider>
+            {/* Birleştirme Sıralama Ekranı */}
+            <Root.Screen name="MergeOrder" component={MergeOrderScreen} />
+          </Root.Navigator>
+        </NavigationContainer>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

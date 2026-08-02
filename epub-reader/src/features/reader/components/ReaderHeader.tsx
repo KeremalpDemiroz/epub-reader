@@ -1,10 +1,11 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, Animated, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import Animated, { SharedValue, useAnimatedStyle, interpolate } from 'react-native-reanimated';
 
 interface ReaderHeaderProps {
   isEditMode: boolean;
   isNavMode: boolean;
-  headerAnim: Animated.Value;
+  headerAnim: SharedValue<number>;
   insets: { top: number };
   bookTitle?: string;
   theme: any;
@@ -26,20 +27,29 @@ export const ReaderHeader: React.FC<ReaderHeaderProps> = React.memo(({
   openDrawer,
   navigation,
 }) => {
-  if (isEditMode) return null;
+  const animatedStyle = useAnimatedStyle(() => {
+    return {
+      opacity: headerAnim.value,
+      transform: [
+        { translateY: interpolate(headerAnim.value, [0, 1], [-150, 0]) }
+      ]
+    };
+  });
 
-  const headerTranslate = headerAnim.interpolate({ inputRange: [0, 1], outputRange: [-150, 0] });
+  if (isEditMode) return null;
 
   return (
     <Animated.View
       pointerEvents={isNavMode ? 'auto' : 'none'}
-      style={[styles.topBar, {
-        transform: [{ translateY: headerTranslate }],
-        opacity: headerAnim,
-        paddingTop: insets.top,
-        backgroundColor: theme.surface,
-        borderBottomColor: theme.border,
-      }]}
+      style={[
+        styles.topBar,
+        animatedStyle,
+        {
+          paddingTop: insets.top,
+          backgroundColor: theme.surface,
+          borderBottomColor: theme.border,
+        }
+      ]}
     >
       <View style={styles.topInner}>
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>

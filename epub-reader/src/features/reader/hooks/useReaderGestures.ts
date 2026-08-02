@@ -1,12 +1,13 @@
 import { useRef, useMemo } from 'react';
-import { PanResponder, Animated } from 'react-native';
+import { Gesture } from 'react-native-gesture-handler';
+import { SharedValue, withTiming, runOnJS } from 'react-native-reanimated';
 
 interface UseReaderGesturesProps {
   width: number;
   DRAWER_WIDTH: number;
   isDrawerOpenRef: React.MutableRefObject<boolean>;
   setIsDrawerOpen: (val: boolean) => void;
-  slideAnim: Animated.Value;
+  slideAnim: SharedValue<number>;
   isEditMode: boolean;
 }
 
@@ -18,70 +19,61 @@ export const useReaderGestures = ({
   slideAnim,
   isEditMode,
 }: UseReaderGesturesProps) => {
-  const openGestureOffset = useRef(DRAWER_WIDTH);
-  const closeGestureOffset = useRef(0);
 
   const setDrawerOpen = (v: boolean) => {
     isDrawerOpenRef.current = v;
     setIsDrawerOpen(v);
   };
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (evt, g) => {
-      if (isEditMode) return false;
-      if (isDrawerOpenRef.current) return false;
-      return evt.nativeEvent.pageX > width * 0.85
-        && g.dx < -6
-        && Math.abs(g.dx) > Math.abs(g.dy) * 1.2;
-    },
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation((v) => { openGestureOffset.current = v; });
-      isDrawerOpenRef.current = true;
-      setIsDrawerOpen(true);
-    },
-    onPanResponderMove: (_e, g) => {
-      const next = Math.max(0, Math.min(DRAWER_WIDTH, openGestureOffset.current + g.dx));
-      slideAnim.setValue(next);
-    },
-    onPanResponderRelease: (_e, g) => {
-      const cur = openGestureOffset.current + g.dx;
-      if (cur < DRAWER_WIDTH * 0.65 || g.vx < -0.4) {
-        Animated.timing(slideAnim, { toValue: 0, duration: 180, useNativeDriver: true }).start();
-      } else {
-        Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 180, useNativeDriver: true })
-          .start(() => setDrawerOpen(false));
+  const panGesture = Gesture.Pan()
+    .onBegin(() => {
+      // no-op
+    })
+    .onUpdate((e) => {
+      if (isEditMode) return;
+      if (isDrawerOpenRef.current) return;
+      // Sadece ekranın sağ %15'inden başlayan sola kaydırmalar
+      if (e.startX > width * 0.85 && e.translationX < -6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
+        slideAnim.value = Math.max(0, Math.min(DRAWER_WIDTH, DRAWER_WIDTH + e.translationX));
       }
-    },
-  }), [width, DRAWER_WIDTH, slideAnim, setIsDrawerOpen, isEditMode]);
+    })
+    .onEnd((e) => {
+      if (isEditMode || isDrawerOpenRef.current) return;
+      if (e.startX > width * 0.85 && e.translationX < -6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
+        const cur = DRAWER_WIDTH + e.translationX;
+        if (cur < DRAWER_WIDTH * 0.65 || e.velocityX < -400) {
+          runOnJS(setDrawerOpen)(true);
+          slideAnim.value = withTiming(0, { duration: 250 });
+        } else {
+          slideAnim.value = withTiming(DRAWER_WIDTH, { duration: 250 });
+        }
+      }
+    });
 
-  const drawerPanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (_e, g) => {
-      if (!isDrawerOpenRef.current) return false;
-      return g.dx > 6 && Math.abs(g.dx) > Math.abs(g.dy) * 1.2;
-    },
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation((v) => { closeGestureOffset.current = v; });
-    },
-    onPanResponderMove: (_e, g) => {
-      const next = Math.max(0, Math.min(DRAWER_WIDTH, closeGestureOffset.current + g.dx));
-      slideAnim.setValue(next);
-    },
-    onPanResponderRelease: (_e, g) => {
-      const cur = closeGestureOffset.current + g.dx;
-      if (cur > DRAWER_WIDTH * 0.35 || g.vx > 0.4) {
-        Animated.timing(slideAnim, { toValue: DRAWER_WIDTH, duration: 180, useNativeDriver: true })
-          .start(() => setDrawerOpen(false));
-      } else {
-        Animated.timing(slideAnim, { toValue: 0, duration: 180, useNativeDriver: true }).start();
+  const drawerPanGesture = Gesture.Pan()
+    .onUpdate((e) => {
+      if (!isDrawerOpenRef.current) return;
+      // Sadece sağa kaydırmalar
+      if (e.translationX > 6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
+        slideAnim.value = Math.max(0, Math.min(DRAWER_WIDTH, e.translationX));
       }
-    },
-  }), [DRAWER_WIDTH, slideAnim, setIsDrawerOpen]);
+    })
+    .onEnd((e) => {
+      if (!isDrawerOpenRef.current) return;
+      if (e.translationX > 6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
+        if (e.translationX > DRAWER_WIDTH * 0.35 || e.velocityX > 400) {
+          slideAnim.value = withTiming(DRAWER_WIDTH, { duration: 250 }, () => {
+            runOnJS(setDrawerOpen)(false);
+          });
+        } else {
+          slideAnim.value = withTiming(0, { duration: 250 });
+        }
+      }
+    });
 
   return {
-    panResponder,
-    drawerPanResponder,
+    panGesture,
+    drawerPanGesture,
     setDrawerOpen,
   };
 };

@@ -1,11 +1,12 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, Animated, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import Animated, { SharedValue, useAnimatedStyle, interpolate } from 'react-native-reanimated';
 import { Typography, Spacing } from '../../../theme';
 
 interface ReaderDockProps {
   isEditMode: boolean;
   isNavMode: boolean;
-  dockAnim: Animated.Value;
+  dockAnim: SharedValue<number>;
   navBarHeight: number;
   dockMode: any;
   setDockMode: (m: any) => void;
@@ -53,20 +54,29 @@ export const ReaderDock: React.FC<ReaderDockProps> = React.memo(({
   MIN_FONT,
   MAX_FONT,
 }) => {
-  if (isEditMode) return null;
+  const animatedStyle = useAnimatedStyle(() => {
+    return {
+      opacity: dockAnim.value,
+      transform: [
+        { translateY: interpolate(dockAnim.value, [0, 1], [250, 0]) }
+      ]
+    };
+  });
 
-  const dockTranslate = dockAnim.interpolate({ inputRange: [0, 1], outputRange: [250, 0] });
+  if (isEditMode) return null;
 
   return (
     <Animated.View
       pointerEvents={isNavMode ? 'auto' : 'none'}
-      style={[styles.dock, {
-        transform: [{ translateY: dockTranslate }],
-        opacity: dockAnim,
-        bottom: navBarHeight + 66,
-        backgroundColor: theme.surface,
-        borderColor: theme.border,
-      }]}
+      style={[
+        styles.dock,
+        animatedStyle,
+        {
+          bottom: navBarHeight + 66,
+          backgroundColor: theme.surface,
+          borderColor: theme.border,
+        }
+      ]}
     >
       {/* ── NAV modu ── */}
       {dockMode === 'nav' && (
