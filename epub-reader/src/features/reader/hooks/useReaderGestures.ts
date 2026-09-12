@@ -33,13 +33,13 @@ export const useReaderGestures = ({
       if (isEditMode) return;
       if (isDrawerOpenRef.current) return;
       // Sadece ekranın sağ %15'inden başlayan sola kaydırmalar
-      if (e.startX > width * 0.85 && e.translationX < -6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
+      if ((e.x - e.translationX) > width * 0.85 && e.translationX < -6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
         slideAnim.value = Math.max(0, Math.min(DRAWER_WIDTH, DRAWER_WIDTH + e.translationX));
       }
     })
     .onEnd((e) => {
       if (isEditMode || isDrawerOpenRef.current) return;
-      if (e.startX > width * 0.85 && e.translationX < -6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
+      if ((e.x - e.translationX) > width * 0.85 && e.translationX < -6 && Math.abs(e.translationX) > Math.abs(e.translationY) * 1.2) {
         const cur = DRAWER_WIDTH + e.translationX;
         if (cur < DRAWER_WIDTH * 0.65 || e.velocityX < -400) {
           runOnJS(setDrawerOpen)(true);

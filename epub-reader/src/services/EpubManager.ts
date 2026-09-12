@@ -25,9 +25,14 @@ export interface EpubParseResult {
  * OPF haritasını çıkararak bölümlerin rotasını oluşturur.
  */
 export const loadEpubAndExtract = async (fileUri: string, bookId: string): Promise<EpubParseResult> => {
-  const base64Data = await FileSystem.readAsStringAsync(fileUri, {
-    encoding: 'base64',
-  });
+  // DocumentPicker'ın SAF cache'ine kopyaladığı dosyayı doğrudan okumak Android'de
+  // "isn't readable" hatası verebiliyor (bkz. expo/expo#21792). Önce kendi
+  // documentDirectory'mize (izin sorunu olmayan, sahibi olduğumuz alan) kopyalayıp
+  // oradan okuyoruz.
+  const importCopyUri = FileSystem.cacheDirectory + `import-${Date.now()}.epub`;
+  await FileSystem.copyAsync({ from: fileUri, to: importCopyUri });
+  const base64Data = await FileSystem.readAsStringAsync(importCopyUri, { encoding: 'base64' });
+  await FileSystem.deleteAsync(importCopyUri, { idempotent: true }).catch(() => {});
 
   const uint8Data = decodeBase64(base64Data);
   const unzipped = unzipSync(uint8Data);

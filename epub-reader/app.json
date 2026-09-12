@@ -8,7 +8,11 @@
     "icon": "./assets/images/icon_demo.png",
     "scheme": "epubreader",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "androidStatusBar": {
+      "translucent": false,
+      "backgroundColor": "#000000",
+      "barStyle": "light-content"
+    },
     "ios": {
       "supportsTablet": true
     },
@@ -21,21 +25,14 @@
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/icon_demo.png"
       },
-      "statusBar": {
-        "translucent": false,
-        "backgroundColor": "#000000",
-        "barStyle": "light-content"
-      },
-      "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
       "package": "com.keremalpdemiroz.epubreader"
     },
     "web": {
-      "output": "static",
+      "output": "single",
       "favicon": "./assets/images/icon_demo.png"
     },
     "plugins": [
-      "expo-router",
       [
         "expo-splash-screen",
         {
@@ -47,14 +44,17 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-font",
+      "expo-web-browser",
+      "expo-image",
+      "expo-sharing",
+      "expo-status-bar"
     ],
     "experiments": {
-      "typedRoutes": true,
       "reactCompiler": true
     },
     "extra": {
-      "router": {},
       "eas": {
         "projectId": "323f8ad6-e827-4fe5-bcb3-e89e483179ec"
       }

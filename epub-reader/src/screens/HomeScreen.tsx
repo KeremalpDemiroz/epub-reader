@@ -49,7 +49,7 @@ export default function HomeScreen() {
   const [showSearch,  setShowSearch]      = useState(false);
   const [mergeMode,   setMergeMode]       = useState(false);
 
-  const tapTimeouts = React.useRef<{ [key: string]: NodeJS.Timeout }>({});
+  const tapTimeouts = React.useRef<{ [key: string]: ReturnType<typeof setTimeout> }>({});
   const route = useRoute<any>();
 
   // Drawer'dan gelen mergeMode paramı

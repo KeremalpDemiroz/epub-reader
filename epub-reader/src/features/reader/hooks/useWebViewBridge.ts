@@ -3,7 +3,7 @@ import { ToastAndroid, Platform, Dimensions } from 'react-native';
 import WebView from 'react-native-webview';
 
 interface UseWebViewBridgeProps {
-  webViewRef: RefObject<WebView>;
+  webViewRef: RefObject<WebView | null>;
   readerMode: 'scroll' | 'paged';
   isEditMode: boolean;
   isNavMode: boolean;
@@ -51,20 +51,21 @@ export const useWebViewBridge = ({
   const hasPrev = chapterIdx > 0;
 
   const saveEdits = useCallback((scrollPct: number) => {
-    console.log('[Reader][Edit] Düzenleme kaydediliyor');
+    if (__DEV__) console.log('[Reader][Edit] Düzenleme kaydediliyor');
     webViewRef.current?.injectJavaScript(
       `window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SAVE_EDIT', html:document.body.innerHTML })); true;`
     );
   }, [webViewRef]);
 
+  // Mesaj tipi → handler eşlemesi (if-zinciri yerine). Her handler kendi guard'ını içinde taşır.
   const handleMsg = useCallback((event: any) => {
-    try {
-      const d = JSON.parse(event.nativeEvent.data);
-      if (d.type === 'DEBUG_PAGE') {
-        console.log(`[WebView][Pagination][${d.action}] sw: ${Math.round(d.sw)}, iw: ${Math.round(d.iw)}, currentPage: ${d.currentPage}/${d.maxPage}`);
-      }
-      if (d.type === 'SAVE_EDIT' && d.html) {
-        console.log(`[Reader][Edit] Kaydedildi — ${d.html.length} karakter`);
+    const handlers: Record<string, (d: any) => void> = {
+      DEBUG_PAGE: (d) => {
+        if (__DEV__) console.log(`[WebView][Pagination][${d.action}] sw: ${Math.round(d.sw)}, iw: ${Math.round(d.iw)}, currentPage: ${d.currentPage}/${d.maxPage}`);
+      },
+      SAVE_EDIT: (d) => {
+        if (!d.html) return;
+        if (__DEV__) console.log(`[Reader][Edit] Kaydedildi — ${d.html.length} karakter`);
         addVersion(d.html);
         const titleMatch = d.html.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i) || d.html.match(/<title[^>]*>(.*?)<\/title>/i);
         if (titleMatch && titleMatch[1]) {
@@ -73,28 +74,29 @@ export const useWebViewBridge = ({
             updateChapterTitle(targetBookId, targetChapterId, rawTitle);
           }
         }
-      }
-      if (d.type === 'SCROLL') {
+      },
+      SCROLL: (d) => {
         setScrollPct(d.pct);
         if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current);
         scrollSaveTimer.current = setTimeout(() => {
           if (targetBookId) updateScrollPosition(targetBookId, d.pct);
         }, 1000);
-      }
-      if (d.type === 'END_OF_CHAPTER' && hasNext && bookChapters) {
-        if (!isEditMode) updateCurrentChapter(targetBookId!, bookChapters[chapterIdx + 1].id);
-      }
-      if (d.type === 'START_OF_CHAPTER' && hasPrev && bookChapters) {
-        if (!isEditMode) {
-          isNavigatingBack.current = true;
-          setIsWebViewReady(false);
-          updateCurrentChapter(targetBookId!, bookChapters[chapterIdx - 1].id);
-        }
-      }
-      if (d.type === 'READY') {
+      },
+      END_OF_CHAPTER: () => {
+        if (!hasNext || !bookChapters || isEditMode) return;
+        updateCurrentChapter(targetBookId!, bookChapters[chapterIdx + 1].id);
+      },
+      START_OF_CHAPTER: () => {
+        if (!hasPrev || !bookChapters || isEditMode) return;
+        isNavigatingBack.current = true;
+        setIsWebViewReady(false);
+        updateCurrentChapter(targetBookId!, bookChapters[chapterIdx - 1].id);
+      },
+      READY: () => {
         setIsWebViewReady(true);
-      }
-      if (d.type === 'TAP_ZONE' && !isEditMode) {
+      },
+      TAP_ZONE: (d) => {
+        if (isEditMode) return;
         if (d.zone === 'mid') {
           toggleNav();
         } else if (d.zone === 'left') {
@@ -102,17 +104,22 @@ export const useWebViewBridge = ({
         } else if (d.zone === 'right') {
           webViewRef.current?.injectJavaScript('if(window.goNext) window.goNext(); true;');
         }
-      }
-      if (d.type === 'TOGGLE_NAV' && !isEditMode) {
-        toggleNav();
-      }
-      if (d.type === 'TOAST') {
+      },
+      TOGGLE_NAV: () => {
+        if (!isEditMode) toggleNav();
+      },
+      TOAST: (d) => {
         if (Platform.OS === 'android') ToastAndroid.show(d.msg, ToastAndroid.SHORT);
-      }
-      if (d.type === 'ASK_EDIT_MODE') {
+      },
+      ASK_EDIT_MODE: () => {
         if (!isNavMode) toggleNav();
         setDockMode('editPrompt');
-      }
+      },
+    };
+
+    try {
+      const d = JSON.parse(event.nativeEvent.data);
+      handlers[d.type]?.(d);
     } catch {}
   }, [
     isEditMode, hasNext, hasPrev, bookChapters, chapterIdx, targetBookId, targetChapterId,
