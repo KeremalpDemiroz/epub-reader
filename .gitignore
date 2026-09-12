@@ -1,0 +1,16 @@
+# GitNexus local index (regenerate: node .gitnexus/run.cjs analyze)
+.gitnexus/
+
+# graphify knowledge graph output (regenerate: /graphify --update)
+graphify-out/
+
+# Expo CLI local dev cache (root-level; epub-reader/.expo already ignored separately)
+.expo/
+
+# dependencies (safety net; epub-reader/node_modules already ignored separately)
+node_modules/
+
+# OS / editor junk
+Thumbs.db
+desktop.ini
+.DS_Store
