@@ -764,6 +764,7 @@ export default function ReaderScreenV2() {
               scrollEnabled={true}
               keyboardDisplayRequiresUserAction={false}
               scalesPageToFit={false}
+              allowFileAccess={true}
               allowFileAccessFromFileURLs={true}
               allowUniversalAccessFromFileURLs={true}
               mixedContentMode="always"

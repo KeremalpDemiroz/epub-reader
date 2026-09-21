@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
 import { unzipSync, strFromU8, zipSync, strToU8 } from 'fflate';
 import { decodeBase64, encodeBase64 } from '../utils/base64';
 
@@ -25,16 +26,13 @@ export interface EpubParseResult {
  * OPF haritasını çıkararak bölümlerin rotasını oluşturur.
  */
 export const loadEpubAndExtract = async (fileUri: string, bookId: string): Promise<EpubParseResult> => {
-  // DocumentPicker'ın SAF cache'ine kopyaladığı dosyayı doğrudan okumak Android'de
-  // "isn't readable" hatası verebiliyor (bkz. expo/expo#21792). Önce kendi
-  // documentDirectory'mize (izin sorunu olmayan, sahibi olduğumuz alan) kopyalayıp
-  // oradan okuyoruz.
-  const importCopyUri = FileSystem.cacheDirectory + `import-${Date.now()}.epub`;
-  await FileSystem.copyAsync({ from: fileUri, to: importCopyUri });
-  const base64Data = await FileSystem.readAsStringAsync(importCopyUri, { encoding: 'base64' });
-  await FileSystem.deleteAsync(importCopyUri, { idempotent: true }).catch(() => {});
-
-  const uint8Data = decodeBase64(base64Data);
+  // expo-file-system/legacy'nin copyAsync/readAsStringAsync'i, DocumentPicker'ın
+  // SAF cache'ine yazdığı dosyayı Android'de tutarlı biçimde "isn't readable"
+  // hatasıyla reddediyor (legacy shim'in content-resolver URI'leriyle bilinen
+  // uyumsuzluğu — bkz. expo/expo#21792). Yeni (non-legacy) File API bu URI'leri
+  // doğru çözüyor; ara kopyalama adımına gerek kalmadan doğrudan okuyoruz.
+  const arrayBuffer = await new File(fileUri).arrayBuffer();
+  const uint8Data = new Uint8Array(arrayBuffer);
   const unzipped = unzipSync(uint8Data);
 
   const bookDir = EPUB_STORAGE_DIR + bookId + '/';

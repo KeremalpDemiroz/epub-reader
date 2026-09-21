@@ -51,7 +51,7 @@ export const useWebViewBridge = ({
   const hasPrev = chapterIdx > 0;
 
   const saveEdits = useCallback((scrollPct: number) => {
-    console.log('[Reader][Edit] Düzenleme kaydediliyor');
+    if (__DEV__) console.log('[Reader][Edit] Düzenleme kaydediliyor');
     webViewRef.current?.injectJavaScript(
       `window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SAVE_EDIT', html:document.body.innerHTML })); true;`
     );
@@ -61,10 +61,10 @@ export const useWebViewBridge = ({
     try {
       const d = JSON.parse(event.nativeEvent.data);
       if (d.type === 'DEBUG_PAGE') {
-        console.log(`[WebView][Pagination][${d.action}] sw: ${Math.round(d.sw)}, iw: ${Math.round(d.iw)}, currentPage: ${d.currentPage}/${d.maxPage}`);
+        if (__DEV__) console.log(`[WebView][Pagination][${d.action}] sw: ${Math.round(d.sw)}, iw: ${Math.round(d.iw)}, currentPage: ${d.currentPage}/${d.maxPage}`);
       }
       if (d.type === 'SAVE_EDIT' && d.html) {
-        console.log(`[Reader][Edit] Kaydedildi — ${d.html.length} karakter`);
+        if (__DEV__) console.log(`[Reader][Edit] Kaydedildi — ${d.html.length} karakter`);
         addVersion(d.html);
         const titleMatch = d.html.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i) || d.html.match(/<title[^>]*>(.*?)<\/title>/i);
         if (titleMatch && titleMatch[1]) {
