@@ -1,11 +1,10 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import * as NavigationBar from 'expo-navigation-bar';
-import { Platform, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import HomeScreen    from './src/screens/HomeScreen';
@@ -17,8 +16,15 @@ import { useThemeStore } from './src/store/useThemeStore';
 
 import { DrawerContentScrollView, DrawerItemList, DrawerContentComponentProps } from '@react-navigation/drawer';
 
+type RootStackParamList = {
+  DrawerRoot: undefined;
+  Reader: { bookId: string };
+  BookInfo: { bookId: string };
+  MergeOrder: { bookIds: string[] };
+};
+
 const Drawer = createDrawerNavigator();
-const Root   = createNativeStackNavigator();
+const Root   = createNativeStackNavigator<RootStackParamList>();
 
 function CustomDrawerContent(props: DrawerContentComponentProps) {
   const { theme } = useThemeStore();
@@ -60,6 +66,7 @@ function DrawerNavigator() {
         headerStyle: { backgroundColor: theme.surface, borderBottomWidth: 1, borderBottomColor: theme.border },
         headerTintColor: theme.textPrimary,
         drawerStyle: { backgroundColor: theme.surface },
+        swipeEdgeWidth: 80,
         drawerActiveTintColor: theme.primary,
         drawerInactiveTintColor: theme.textSecondary,
         drawerActiveBackgroundColor: theme.primaryLight,
@@ -87,21 +94,10 @@ function DrawerNavigator() {
 export default function App() {
   const { isDarkMode, theme } = useThemeStore();
   
-  useEffect(() => {
-    if (Platform.OS === 'android') {
-      NavigationBar.setPositionAsync('absolute');
-      NavigationBar.setBackgroundColorAsync('transparent');
-    }
-  }, []);
-
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <StatusBar 
-          style={isDarkMode ? 'light' : 'dark'} 
-          backgroundColor="transparent"
-          translucent={true}
-        />
+        <StatusBar style={isDarkMode ? 'light' : 'dark'} />
         <NavigationContainer>
           <Root.Navigator screenOptions={{ headerShown: false }}>
             {/* Kitaplık / Drawer ekranı */}

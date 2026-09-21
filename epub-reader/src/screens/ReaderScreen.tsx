@@ -8,7 +8,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
-import * as NavigationBar from 'expo-navigation-bar';
+import { NavigationBar } from 'expo-navigation-bar';
 import * as FileSystem from 'expo-file-system/legacy';
 import { strFromU8 } from 'fflate';
 import { decodeBase64 } from '../utils/base64';
@@ -140,7 +140,7 @@ export default function ReaderScreen() {
     console.log('[Reader][Nav] Header/Dock gösteriliyor');
     setIsNavMode(true);
     if (Platform.OS === 'android') {
-      NavigationBar.setVisibilityAsync('visible');
+      NavigationBar.setHidden(false);
     }
     Animated.parallel([
       Animated.timing(headerAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
@@ -151,7 +151,7 @@ export default function ReaderScreen() {
   const hideNav = useCallback(() => {
     console.log('[Reader][Nav] Header/Dock gizleniyor');
     if (Platform.OS === 'android') {
-      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setHidden(true);
     }
     Animated.parallel([
       Animated.timing(headerAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
@@ -226,13 +226,11 @@ export default function ReaderScreen() {
   // Okuma modunda sistem gezinti çubuğunu gizle (overlay-swipe: üzerine biner, layout etkilemez)
   useEffect(() => {
     if (Platform.OS === 'android') {
-      NavigationBar.setBehaviorAsync('overlay-swipe');
-      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setHidden(true);
     }
     return () => {
       if (Platform.OS === 'android') {
-        NavigationBar.setBehaviorAsync('inset-touch');
-        NavigationBar.setVisibilityAsync('visible');
+        NavigationBar.setHidden(false);
       }
     };
   }, []);
@@ -908,8 +906,6 @@ export default function ReaderScreen() {
     >
       <StatusBar
         hidden={true}
-        backgroundColor="transparent"
-        translucent={true}
         style={isDarkMode ? 'light' : 'dark'}
       />
 
@@ -1355,7 +1351,7 @@ const getStyles = (theme: AppTheme, width: number, height: number, insetsTop: nu
     content: { flex: 1 },
     webview: { flex: 1 },
     center:  { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 15 },
+    overlay: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 15 },
 
     // ─ Edit Mod Floating Bar ─
     editBar: {

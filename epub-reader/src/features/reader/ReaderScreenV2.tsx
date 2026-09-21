@@ -7,7 +7,7 @@ import { GestureDetector } from 'react-native-gesture-handler';
 import { useSharedValue, withTiming, runOnJS } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
-import * as NavigationBar from 'expo-navigation-bar';
+import { NavigationBar } from 'expo-navigation-bar';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -88,13 +88,13 @@ export default function ReaderScreenV2() {
   // ── Navigation Toggle ──
   const showNav = useCallback(() => {
     setIsNavMode(true);
-    if (Platform.OS === 'android') NavigationBar.setVisibilityAsync('visible');
+    if (Platform.OS === 'android') NavigationBar.setHidden(false);
     headerAnim.value = withTiming(1, { duration: 200 });
     dockAnim.value = withTiming(1, { duration: 200 });
   }, [headerAnim, dockAnim]);
 
   const hideNav = useCallback(() => {
-    if (Platform.OS === 'android') NavigationBar.setVisibilityAsync('hidden');
+    if (Platform.OS === 'android') NavigationBar.setHidden(true);
     headerAnim.value = withTiming(0, { duration: 200 });
     dockAnim.value = withTiming(0, { duration: 200 }, (finished) => {
       if (finished) {
@@ -162,13 +162,11 @@ export default function ReaderScreenV2() {
   // ── Effects ──
   useEffect(() => {
     if (Platform.OS === 'android') {
-      NavigationBar.setBehaviorAsync('overlay-swipe');
-      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setHidden(true);
     }
     return () => {
       if (Platform.OS === 'android') {
-        NavigationBar.setBehaviorAsync('inset-touch');
-        NavigationBar.setVisibilityAsync('visible');
+        NavigationBar.setHidden(false);
       }
     };
   }, []);
@@ -427,10 +425,28 @@ export default function ReaderScreenV2() {
       }, { passive: true });
 
       var startX = 0, startY = 0;
+      var longPressTimer = null;
+      var longPressTriggered = false;
       document.addEventListener('touchstart', function(e) {
         if(document.body.contentEditable === "true") return;
         startX = e.touches[0].clientX;
         startY = e.touches[0].clientY;
+        longPressTriggered = false;
+        clearTimeout(longPressTimer);
+        longPressTimer = setTimeout(function() {
+          longPressTriggered = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ASK_EDIT_MODE' }));
+        }, 500);
+      }, { passive: true });
+      document.addEventListener('touchmove', function(e) {
+        if (!longPressTimer) return;
+        var dx = Math.abs(e.touches[0].clientX - startX);
+        var dy = Math.abs(e.touches[0].clientY - startY);
+        if (dx > 10 || dy > 10) { clearTimeout(longPressTimer); longPressTimer = null; }
+      }, { passive: true });
+      document.addEventListener('touchend', function() {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
       }, { passive: true });
 
       window.goNext = function() {
@@ -524,6 +540,7 @@ export default function ReaderScreenV2() {
       });
 
       document.addEventListener('click', function(e) {
+        if (longPressTriggered) { longPressTriggered = false; return; }
         if(window.isDrawerOpen || document.body.contentEditable==="true") return;
         if (window.isPaged) {
           var ratio = e.clientX / window.innerWidth;
@@ -676,10 +693,9 @@ export default function ReaderScreenV2() {
 
   useEffect(() => {
     if (Platform.OS === 'android') {
-      NavigationBar.setBackgroundColorAsync(bgPreset.bg);
-      NavigationBar.setButtonStyleAsync(themeState.isDarkMode ? 'light' : 'dark');
+      NavigationBar.setStyle(themeState.isDarkMode ? 'light' : 'dark');
     }
-  }, [bgPreset.bg, themeState.isDarkMode]);
+  }, [themeState.isDarkMode]);
 
   const isKeyboardVisibleRef = useRef(isKeyboardVisible);
   useEffect(() => {
@@ -701,8 +717,7 @@ export default function ReaderScreenV2() {
 
   useEffect(() => {
     if (!isEditMode && !isNavMode && Platform.OS === 'android') {
-      NavigationBar.setBehaviorAsync('overlay-swipe');
-      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setHidden(true);
     }
   }, [isEditMode, isNavMode]);
 
@@ -720,7 +735,7 @@ export default function ReaderScreenV2() {
         behavior={Platform.OS === 'ios' ? 'padding' : isEditMode ? 'height' : undefined}
         keyboardVerticalOffset={0}
       >
-      <StatusBar hidden={true} translucent={true} style={themeState.isDarkMode ? 'light' : 'dark'} />
+      <StatusBar hidden={true} style={themeState.isDarkMode ? 'light' : 'dark'} />
 
       <ReaderHeader
         isEditMode={isEditMode}

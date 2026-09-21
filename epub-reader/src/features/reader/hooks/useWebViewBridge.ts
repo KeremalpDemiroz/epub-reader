@@ -3,7 +3,7 @@ import { ToastAndroid, Platform, Dimensions } from 'react-native';
 import WebView from 'react-native-webview';
 
 interface UseWebViewBridgeProps {
-  webViewRef: RefObject<WebView>;
+  webViewRef: RefObject<WebView | null>;
   readerMode: 'scroll' | 'paged';
   isEditMode: boolean;
   isNavMode: boolean;
