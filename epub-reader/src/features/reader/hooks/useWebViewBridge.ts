@@ -18,9 +18,18 @@ interface UseWebViewBridgeProps {
   setScrollPct: (pct: number) => void;
   setIsWebViewReady: (ready: boolean) => void;
   isNavigatingBack: React.MutableRefObject<boolean>;
+  pendingAnchorId: React.MutableRefObject<string | null>;
   toggleNav: () => void;
   setDockMode: (mode: any) => void;
 }
+
+const scrollToAnchorJs = (anchorId: string) => `
+  (function(){
+    var id = ${JSON.stringify(anchorId)};
+    var t = document.getElementById(id) || document.getElementsByName(id)[0];
+    if (t) t.scrollIntoView({ behavior: 'auto' });
+  })(); true;
+`;
 
 export const useWebViewBridge = ({
   webViewRef,
@@ -38,6 +47,7 @@ export const useWebViewBridge = ({
   setScrollPct,
   setIsWebViewReady,
   isNavigatingBack,
+  pendingAnchorId,
   toggleNav,
   setDockMode,
 }: UseWebViewBridgeProps) => {
@@ -52,8 +62,11 @@ export const useWebViewBridge = ({
 
   const saveEdits = useCallback((scrollPct: number) => {
     if (__DEV__) console.log('[Reader][Edit] Düzenleme kaydediliyor');
+    // Tam belge (outerHTML) gönderiyoruz: currentText/baseText de tam belge olarak
+    // tutuluyor, aksi halde diff-match-patch küçük bir gövde parçasıyla tüm belgeyi
+    // kıyaslayıp restore sırasında eşleşemeyen dev bir patch üretiyor ve düzenleme kayboluyor.
     webViewRef.current?.injectJavaScript(
-      `window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SAVE_EDIT', html:document.body.innerHTML })); true;`
+      `window.ReactNativeWebView.postMessage(JSON.stringify({ type:'SAVE_EDIT', html:document.documentElement.outerHTML })); true;`
     );
   }, [webViewRef]);
 
@@ -93,6 +106,11 @@ export const useWebViewBridge = ({
       }
       if (d.type === 'READY') {
         setIsWebViewReady(true);
+        if (pendingAnchorId.current) {
+          const anchor = pendingAnchorId.current;
+          pendingAnchorId.current = null;
+          webViewRef.current?.injectJavaScript(scrollToAnchorJs(anchor));
+        }
       }
       if (d.type === 'TAP_ZONE' && !isEditMode) {
         if (d.zone === 'mid') {
@@ -113,11 +131,33 @@ export const useWebViewBridge = ({
         if (!isNavMode) toggleNav();
         setDockMode('editPrompt');
       }
+      if (d.type === 'NAV_LINK' && d.href && !isEditMode && bookChapters && targetBookId) {
+        const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+        const [rawPath, hash] = String(d.href).split('#');
+        const hrefPath = decode(rawPath || '');
+        const baseName = hrefPath.split('/').pop();
+        const match = bookChapters.find((c: any) => {
+          const cHref = decode(c.href);
+          return cHref === hrefPath || cHref.endsWith('/' + hrefPath) || cHref.split('/').pop() === baseName;
+        });
+        if (match) {
+          if (match.id !== targetChapterId) {
+            // Hedef bölüm farklı: önce bölümü değiştir, sayfa READY olunca çapaya kaydır.
+            pendingAnchorId.current = hash || null;
+            updateCurrentChapter(targetBookId, match.id);
+          } else if (hash) {
+            // Link zaten görüntülenen bölümü kendi dosya adıyla işaret ediyor (bazı epub'larda
+            // TOC/dipnot linkleri "#anchor" yerine "aynidosya.xhtml#anchor" biçiminde) — önceden
+            // bu durumda hiçbir şey olmuyordu, şimdi doğrudan kaydırıyoruz.
+            webViewRef.current?.injectJavaScript(scrollToAnchorJs(hash));
+          }
+        }
+      }
     } catch {}
   }, [
     isEditMode, hasNext, hasPrev, bookChapters, chapterIdx, targetBookId, targetChapterId,
     isNavMode, toggleNav, setDockMode, addVersion, updateChapterTitle, setScrollPct,
-    updateScrollPosition, updateCurrentChapter, setIsWebViewReady, isNavigatingBack, webViewRef
+    updateScrollPosition, updateCurrentChapter, setIsWebViewReady, isNavigatingBack, pendingAnchorId, webViewRef
   ]);
 
   const handleVolumeKey = useCallback((dir: 'next' | 'prev') => {

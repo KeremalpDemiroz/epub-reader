@@ -65,6 +65,7 @@ export default function ReaderScreenV2() {
   // ── Refs ──
   const isNavigatingBack = useRef(false);
   const pendingScrollRestore = useRef<number | null>(null);
+  const pendingAnchorId = useRef<string | null>(null);
   const isNavModeRef = useRef(isNavMode);
   useEffect(() => { isNavModeRef.current = isNavMode; }, [isNavMode]);
 
@@ -156,7 +157,7 @@ export default function ReaderScreenV2() {
     updateChapterTitle: libraryState.updateChapterTitle,
     updateScrollPosition: libraryState.updateScrollPosition,
     updateCurrentChapter: libraryState.updateCurrentChapter,
-    setScrollPct, setIsWebViewReady, isNavigatingBack, toggleNav, setDockMode
+    setScrollPct, setIsWebViewReady, isNavigatingBack, pendingAnchorId, toggleNav, setDockMode
   });
 
   // ── Effects ──
@@ -431,6 +432,7 @@ export default function ReaderScreenV2() {
         if(document.body.contentEditable === "true") return;
         startX = e.touches[0].clientX;
         startY = e.touches[0].clientY;
+        if (startX > window.innerWidth * 0.85) return; // sağ kenar: çekmece kaydırma alanı, uzun basma tetiklenmesin
         longPressTriggered = false;
         clearTimeout(longPressTimer);
         longPressTimer = setTimeout(function() {
@@ -542,6 +544,26 @@ export default function ReaderScreenV2() {
       document.addEventListener('click', function(e) {
         if (longPressTriggered) { longPressTriggered = false; return; }
         if(window.isDrawerOpen || document.body.contentEditable==="true") return;
+
+        // İçindekiler / dahili bağlantılar: WebView'ün kendi file:// navigasyonuna
+        // izin vermek yerine (SAF kısıtlarında ERR_FILE_NOT_FOUND'a yol açıyor)
+        // native tarafa bölüm hedefini bildiriyoruz.
+        var link = e.target.closest ? e.target.closest('a[href]') : null;
+        if (link) {
+          var href = link.getAttribute('href') || '';
+          if (href && !/^https?:\/\//i.test(href) && !/^mailto:/i.test(href)) {
+            e.preventDefault();
+            if (href.charAt(0) === '#') {
+              var elId = href.slice(1);
+              var target = elId ? (document.getElementById(elId) || document.getElementsByName(elId)[0]) : null;
+              if (target) target.scrollIntoView({ behavior: 'smooth' });
+            } else {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'NAV_LINK', href: href }));
+            }
+            return;
+          }
+        }
+
         if (window.isPaged) {
           var ratio = e.clientX / window.innerWidth;
           var zone = ratio < 0.25 ? 'left' : ratio > 0.75 ? 'right' : 'mid';
@@ -889,7 +911,9 @@ export default function ReaderScreenV2() {
             <TouchableOpacity onPress={() => {
               const html = timelineState.currentText;
               if (html) {
-                webViewRef.current?.injectJavaScript(`document.body.innerHTML=\`${html.replace(/`/g,'\\\\`')}\`; true;`);
+                const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+                const bodyContent = bodyMatch ? bodyMatch[1] : html;
+                webViewRef.current?.injectJavaScript(`document.body.innerHTML=${JSON.stringify(bodyContent)}; true;`);
               }
               setIsEditMode(false);
             }} style={{ borderWidth: 1, borderColor: themeState.theme.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 16 }}>

@@ -51,9 +51,27 @@ export const mergeBooks = async (
   const navPoints: string[] = [];
   const totalChapters = books.reduce((acc, book) => acc + (book.chapters?.length || 0), 0);
   let globalChapterCounter = 0;
-  let chapterCounter = 0;
   let imageCounter = 0;
   let coverImageFile: string | null = null;
+
+  // Bölüm dosya adlarını ÖNCEDEN belirle: içerikteki bölümler-arası (TOC/dipnot)
+  // linkleri orijinal dosya adlarından yeni adlara çevirebilmek için, ileri
+  // referansların da (henüz işlenmemiş bölüme link) çözülebilmesi gerekiyor.
+  const chapterIdMap = new Map<any, { chId: string; newFileName: string; order: number }>();
+  const chapterFileMap: Record<string, string> = {}; // `${bookIdx}_${orijinalDosyaAdı}` → yeni dosya adı
+  {
+    let counter = 0;
+    for (let bookIdx = 0; bookIdx < books.length; bookIdx++) {
+      for (const chapter of books[bookIdx].chapters || []) {
+        counter++;
+        const chId = `ch_${bookIdx}_${counter}`;
+        const newFileName = `${chId}.xhtml`;
+        chapterIdMap.set(chapter, { chId, newFileName, order: counter });
+        const baseName = chapter.href.split('/').pop();
+        if (baseName) chapterFileMap[`${bookIdx}_${baseName}`] = newFileName;
+      }
+    }
+  }
 
   // Kapak görselini kopyala
   if (coverBookId) {
@@ -84,17 +102,15 @@ export const mergeBooks = async (
     const resourceMap: Record<string, string> = {}; // orijinal göreli yol → yeni yol
 
     for (const chapter of book.chapters) {
-      chapterCounter++;
       globalChapterCounter++;
-      
+
       if (globalChapterCounter % 2 === 0) {
         await new Promise(r => setTimeout(r, 10)); // UI Thread'e nefes aldır
       }
-      
+
       onProgress?.(`Bölüm İşleniyor: ${globalChapterCounter}/${totalChapters}`, (globalChapterCounter / Math.max(1, totalChapters)) * 90);
 
-      const chId = `ch_${bookIdx}_${chapterCounter}`;
-      const newFileName = `${chId}.xhtml`;
+      const { chId, newFileName, order: chapterOrder } = chapterIdMap.get(chapter)!;
 
       // Orijinal XHTML'yi oku
       let htmlContent = '';
@@ -145,6 +161,19 @@ export const mergeBooks = async (
       // CSS referanslarını kaldır (farklı kitaplardan gelen CSS'ler çakışabilir)
       htmlContent = htmlContent.replace(/<link[^>]*rel=["']stylesheet["'][^>]*>/gi, '');
 
+      // Bölümler arası (TOC/dipnot vb.) linkleri yeni dosya adlarına yeniden yaz.
+      // Aksi halde bölümler yeniden adlandırıldığı için bu linkler var olmayan
+      // eski dosyaları işaret eder ve çalışmaz.
+      htmlContent = htmlContent.replace(/(<a\s[^>]*?href=["'])([^"'#][^"']*)(["'])/gi, (full, prefix, hrefVal, suffix) => {
+        if (/^(https?:|mailto:|data:)/i.test(hrefVal)) return full;
+        const [rawPath, hash] = hrefVal.split('#');
+        if (!rawPath) return full;
+        const baseName = rawPath.split('/').pop();
+        const mapped = baseName ? chapterFileMap[`${bookIdx}_${baseName}`] : undefined;
+        if (!mapped) return full;
+        return `${prefix}${mapped}${hash ? '#' + hash : ''}${suffix}`;
+      });
+
       // XHTML olarak kaydet
       const htmlU8 = strToU8(htmlContent);
       await FileSystem.writeAsStringAsync(
@@ -155,7 +184,7 @@ export const mergeBooks = async (
 
       manifestItems.push(`    <item id="${chId}" href="Text/${newFileName}" media-type="application/xhtml+xml"/>`);
       spineItems.push(`    <itemref idref="${chId}"/>`);
-      navPoints.push(`    <navPoint id="nav_${chId}" playOrder="${chapterCounter}">
+      navPoints.push(`    <navPoint id="nav_${chId}" playOrder="${chapterOrder}">
       <navLabel><text>${escapeXml(chapter.title)}</text></navLabel>
       <content src="Text/${newFileName}"/>
     </navPoint>`);

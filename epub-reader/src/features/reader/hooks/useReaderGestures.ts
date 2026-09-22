@@ -54,6 +54,10 @@ export const useReaderGestures = ({
     });
 
   const drawerPanGesture = Gesture.Pan()
+    // Dikey harekette hemen fail et ki bölüm listesi (FlatList) kendi scroll'unu yapabilsin;
+    // sadece belirgin sağa kaydırmada aktifleşsin (çekmeceyi kapatma hareketi).
+    .failOffsetY([-15, 15])
+    .activeOffsetX([10, 1000])
     .onUpdate((e) => {
       if (!isDrawerOpenRef.current) return;
       // Sadece sağa kaydırmalar
